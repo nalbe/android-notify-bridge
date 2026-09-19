@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "lednls"
+rootProject.name = "noty-bridge"
 include(":app")

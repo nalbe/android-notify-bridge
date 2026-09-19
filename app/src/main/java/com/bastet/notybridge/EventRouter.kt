@@ -1,4 +1,4 @@
-package com.bastet.lednls
+package com.bastet.notybridge
 
 /**
  * A single observed event on the bridge bus, fully normalized before it
@@ -43,7 +43,7 @@ object EventRouter {
      *  sinks/rules - a config file is not even needed to watch the bus. */
     fun mirror(e: BridgeEvent, config: BridgeConfig) {
         if (!config.logAll) return
-        android.util.Log.i("led-nls",
+        android.util.Log.i("notybridge",
             "EVENT ${e.type} ${e.action} pkg=${e.pkg} id=${e.id} key=${e.key} " +
                 "reason=${e.reason} incoming=${if (e.incoming) "1" else "0"} " +
                 "on=${if (e.on) "1" else "0"}")

@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.bastet.lednls"
+    namespace = "com.bastet.notybridge"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.bastet.lednls"
+        applicationId = "com.bastet.notybridge"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0.0"
     }
 
     compileOptions {
@@ -32,5 +32,4 @@ android {
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

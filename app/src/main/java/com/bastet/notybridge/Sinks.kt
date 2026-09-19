@@ -1,4 +1,4 @@
-package com.bastet.lednls
+package com.bastet.notybridge
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
@@ -19,14 +19,14 @@ class LogSink(override val name: String) : Sink {
     override fun start() {}
     override fun stop() {}
     override fun send(line: String) {
-        android.util.Log.i("led-nls", "sink[$name] $line")
+        android.util.Log.i("notybridge", "sink[$name] $line")
     }
 }
 
 /**
  * One abstract-namespace Unix socket transport, one reconnect loop thread
- * each. On connect the caller replays its live state [onConnect]; daemon
- * -> app lines (PONG, "WD <ms>") go to [onLine]. Send is fire-and-forget:
+ * each. On connect the caller replays its live state [onConnect]; consumer
+ * -> app lines (PONG etc.) go to [onLine]. Send is fire-and-forget:
  * while the loop is away the line is dropped, exactly like the old single
  * socket, per sink.
  */
@@ -92,14 +92,14 @@ class SocketSink(
             }
             sock = ls
             connected = true
-            android.util.Log.i("led-nls", "sink[$name]: connected to $sockName")
+            android.util.Log.i("notybridge", "sink[$name]: connected to $sockName")
             try {
                 onConnect(this)
                 drain(ls)
             } finally {
                 connected = false
                 if (sock === ls) sock = null
-                android.util.Log.i("led-nls", "sink[$name]: closed, reconnecting")
+                android.util.Log.i("notybridge", "sink[$name]: closed, reconnecting")
                 sleep(1000)
             }
         }

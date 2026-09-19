@@ -1,4 +1,4 @@
-package com.bastet.lednls
+package com.bastet.notybridge
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -22,28 +22,26 @@ import java.util.Collections
 /**
  * NotificationListenerService - standalone headless notification bridge.
  *
- * Lives in its own APK (com.bastet.lednls). The whole forwarding policy
- * lives in an optional device-side config (/data/local/tmp/lednls_bridge.json):
+ * Lives in its own APK (com.bastet.notybridge). The whole forwarding policy
+ * lives in an optional device-side config (/data/local/tmp/notybridge.json):
  * which observed event goes where is a rule list, each rule rendering a
  * text line ("$pkg $id $key $incoming $on ...") into a configured sink
  * (abstract Unix socket, or logcat). No config file = built-in defaults
- * that reproduce the classic chgd contract:
+ * that reproduce the classic consumer contract:
  *   ENQ <pkg> <id> / CAN <pkg> <id>
  *   RING_ON <0|1> / RING_OFF
  *   VOIP_ON <pkg> / VOIP_OFF <pkg>
- *   SCREEN <0|1>, PULSE <0|1>, PING -> PONG, WD <ms> (daemon -> app)
+ *   SCREEN <0|1>, PULSE <0|1>, PING -> PONG
  *
  * Observed bus is a superset of the old transport: notify / ring / voip /
  * screen / pulse events with normalized fields; SIM- and messenger-call
  * classification stays built-in (the package lists are config), because a
  * raw notification carries no "this is a call" marker.
  *
- * Supervision: this service supervises the daemon it serves. At the
- * cadence from config "watchdogMs" (or the consumer's "WD <ms>" push, or
- * the built-in 60000 default) it asks su whether the daemon binary is
- * alive and restarts it when not. Live bridge state mirrors to
- * config "statusPath" style /data/local/tmp/lednls.status for the GUI.
-
+ * This app is a pure transport: it never supervises, restarts or otherwise
+ * reaches into any consumer (daemon) - the config is re-read on mtime
+ * change only so an edit applies without a broadcast.
+ *
  * Threading: the system may call onListenerConnected() repeatedly (GSI
  * rebinds, process freezes). Each socket sink owns one reconnect loop
  * thread created once; onListenerConnected is then a no-op. Only the loop
@@ -60,7 +58,7 @@ class LedNotificationListenerService : NotificationListenerService() {
     @Volatile
     private var sinks: SinkRegistry? = null
 
-    private var watchdog: Thread? = null
+    private var reload: Thread? = null
     private var pulseObserver: ContentObserver? = null
     private var screenReceiver: BroadcastReceiver? = null
     private val loopLock = Object()
@@ -69,8 +67,8 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         applyConfig()
-        // Watchdog first so the daemon is likely alive when the loops fire.
-        startWatchdog()
+        // Config reload first so the fresh rules are live when loops fire.
+        startReload()
         startSinks()
     }
 
@@ -91,10 +89,10 @@ class LedNotificationListenerService : NotificationListenerService() {
             Notification.Builder(this, "ledtest")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("LED bridge test")
-                .setContentText("ENQ should hit chgd and arm the LED")
+                .setContentText("ENQ should hit the socket consumer and arm the LED")
                 .build()
         )
-        android.util.Log.i("led-nls", "self-test notification posted")
+        android.util.Log.i("notybridge", "self-test notification posted")
     }
 
     override fun onCreate() {
@@ -106,7 +104,7 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     // ------------------------------------------------------------ config
 
-    /** Load (or reload) config, rebuild sinks, restart the supervisor. */
+    /** Load (or reload) config, rebuild sinks, restart the reloader. */
     private fun applyConfig() {
         val cfg = BridgeConfig.load()
         synchronized(loopLock) {
@@ -114,11 +112,10 @@ class LedNotificationListenerService : NotificationListenerService() {
             if (old != null) old.stopAll()
             sinks = SinkRegistry(cfg, onSocketLine, onSocketConnect).also { it.startAll() }
             config = cfg
-            applyWatchdogLocked()
+            applyReloadLocked()
         }
-        android.util.Log.i("led-nls",
-            "config: ${cfg.rules.size} rules, ${cfg.sinks.size} sinks, " +
-                "wd=${cfg.watchdogMs ?: "consumer"} daemon=${cfg.daemonName}")
+        android.util.Log.i("notybridge",
+            "config: ${cfg.rules.size} rules, ${cfg.sinks.size} sinks")
     }
 
     private var lastCfgMtime = 0L
@@ -158,7 +155,7 @@ class LedNotificationListenerService : NotificationListenerService() {
                 @Suppress("UnspecifiedRegisterReceiverFlag")
                 registerReceiver(r, f)
             screenReceiver = r
-            android.util.Log.i("led-nls", "screen receiver on")
+            android.util.Log.i("notybridge", "screen receiver on")
         }
     }
 
@@ -184,28 +181,20 @@ class LedNotificationListenerService : NotificationListenerService() {
             }
             contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, o)
             pulseObserver = o
-            android.util.Log.i("led-nls", "pulse observer on Settings.System")
+            android.util.Log.i("notybridge", "pulse observer on Settings.System")
         }
     }
 
-    /** Forward a toggle change: preferred way is the pulse event (event-
-     *  driven, no root). When no socket is up, fall back to SIGUSR2 over
-     *  su - same daemon-side effect, only for that rare window. */
+    /** Forward a toggle change as a pulse event; dropped while no sink is
+     *  connected - the consumer re-reads the toggle itself on its next
+     *  arm, and the connect replay covers a restart. */
     private fun forwardPulse(on: Boolean) {
         val v = if (on) 1 else 0
         if (lastPulseSent == v) return        // dedupe Settings exit ack storms
         lastPulseSent = v
         emit(BridgeEvent("pulse", if (on) "on" else "off", on = on))
-        if (on) return                         // turning back on needs no disarm
-        if (sinks?.anySocketConnected() == true) return
-        android.util.Log.w("led-nls", "pulse=0 but no socket; SIGUSR2 fallback")
-        Thread({
-            try {
-                SuShell.exec("kill -USR2 \$(pidof ${config.daemonName}) 2>/dev/null")
-            } catch (_: Exception) {
-                // no root / su pending: next notification arm re-reads anyway
-            }
-        }, "led-nls-pulse").apply { isDaemon = true }.start()
+        if (!on && sinks?.anySocketConnected() == false)
+            android.util.Log.w("notybridge", "pulse=0 but no socket; disarm missed")
     }
 
     override fun onDestroy() {
@@ -216,7 +205,7 @@ class LedNotificationListenerService : NotificationListenerService() {
             screenReceiver?.let { runCatching { unregisterReceiver(it) } }
             screenReceiver = null
         }
-        watchdog?.interrupt()
+        reload?.interrupt()
         sinks?.stopAll()
         super.onDestroy()
     }
@@ -266,26 +255,10 @@ class LedNotificationListenerService : NotificationListenerService() {
         replayInto(sink, cfg)
     }
 
-    /** Consumer -> app lines: only "WD <ms>" matters (the classic cadence
-     *  push). PONG is a probe echo we ignore. WD is the authoritative
-     *  keepalive: it is written back into the config file (persistent) and
-     *  applied immediately. */
-    private val onSocketLine: (String) -> Unit = { line ->
-        if (line.startsWith("WD ")) {
-            val ms = line.substring(3).trim().toLongOrNull()
-            if (ms != null && ms != config.watchdogMs) {
-                android.util.Log.i("led-nls", "watchdog pushed from consumer: ${ms}ms")
-                BridgeConfig.persistWatchdogMs(ms)
-                synchronized(loopLock) {
-                    config = config.copy(watchdogMs = ms)
-                    // the file we just wrote must not trip the mtime reload
-                    lastCfgMtime =
-                        runCatching { File(BridgeConfig.CONFIG_PATH).lastModified() }.getOrDefault(0L)
-                    applyWatchdogLocked()
-                }
-            }
-        }
-    }
+    /** Consumer -> app lines. Only PONG is expected (liveness echo, ignores
+     *  app's PING); misc pushes are discarded - this app runs no state
+     *  machine against the consumer. */
+    private val onSocketLine: (String) -> Unit = { _ -> }
 
     // ------------------------------------------------------------ loop
 
@@ -293,73 +266,41 @@ class LedNotificationListenerService : NotificationListenerService() {
         sinks?.startAll()
     }
 
-    // ------------------------------------------------------------ watchdog
+    // ------------------------------------------------------------ reload
 
-    private fun effectiveWd(): Long = config.watchdogMs ?: 60000L
-
-    private fun startWatchdog() {
-        applyWatchdogLocked()
+    private fun startReload() {
+        applyReloadLocked()
     }
 
-    /** Start/keep the supervisor thread for the effective cadence. 0
-     *  disables and stops it. A live supervisor with positive cadence is
-     *  left untouched (rebind storms must not spawn duplicates). */
-    private fun applyWatchdogLocked() {
-        val cur = watchdog
-        val cadence = effectiveWd()
-        if (cadence > 0) {
-            if (cur?.isAlive == true) return
-            val t = Thread({ watchLoop(cadence) }, "led-nls-watch")
-            t.isDaemon = true
-            t.start()
-            watchdog = t
-            android.util.Log.i("led-nls", "watchdog on, ${cadence}ms")
-        } else {
-            cur?.interrupt()
-            watchdog = null
-            android.util.Log.i("led-nls", "watchdog off")
-        }
+    /** Start/keep the config reload poller. A live poller is left
+     *  untouched (rebind storms must not spawn duplicates). */
+    private fun applyReloadLocked() {
+        val cur = reload
+        if (cur?.isAlive == true) return
+        val t = Thread({ reloadLoop() }, "notybridge-reload")
+        t.isDaemon = true
+        t.start()
+        reload = t
+        android.util.Log.i("notybridge", "config reload poller on")
     }
 
-    /** chgd owns the LED and the abstract socket; if it dies nothing blinks
-     *  and the reconnect loops just spin against a dead endpoint. The system
-     *  resurrects THIS process (notification listener rebind), so a supervisor
-     *  living here outlives any shell keepalive nobody restarts. */
-    private fun watchLoop(cadence: Long) {
+    /** Pure mtime re-check so a config edit applies without a broadcast.
+     *  No root, no consumer knowledge: this app supervises nothing. */
+    private fun reloadLoop() {
         while (!Thread.currentThread().isInterrupted) {
             try {
                 maybeReloadOnMtime()
-                ensureDaemon()
             } catch (_: Exception) {
-                // no root yet / su denied: keep the supervisor alive,
-                // retry next tick instead of crashing the process
+                // keep the poller alive, retry next tick
             }
-            try { Thread.sleep(cadence) } catch (_: InterruptedException) { break }
-        }
-    }
-
-    private fun ensureDaemon() {
-        val cfg = config
-        val pid = try {
-            SuShell.exec("pidof ${cfg.daemonName}").trim()
-        } catch (e: Exception) {
-            ""                                    // no root (yet): retry next tick
-        }
-        if (pid.isNotEmpty()) return
-        android.util.Log.w("led-nls", "${cfg.daemonName} is dead, restarting via su")
-        try {
-            SuShell.exec(
-                "setsid ${cfg.daemonPath} >/data/local/tmp/chgd.err 2>&1 </dev/null &"
-            )
-        } catch (_: Exception) {
-            // su not granted yet (KernelSU prompt pending): retry next tick
+            try { Thread.sleep(10000) } catch (_: InterruptedException) { break }
         }
     }
 
     // ------------------------------------------------------------ events
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        android.util.Log.i("led-nls", "posted ${sbn.packageName} id=${sbn.id} key=${sbn.key}")
+        android.util.Log.i("notybridge", "posted ${sbn.packageName} id=${sbn.id} key=${sbn.key}")
         if (isSimCallNotification(sbn)) {
             val incoming = simCallIsIncoming(sbn)
             ringNotifs.add(sbn.key)
@@ -376,7 +317,7 @@ class LedNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        android.util.Log.i("led-nls", "removed ${sbn.packageName} id=${sbn.id}")
+        android.util.Log.i("notybridge", "removed ${sbn.packageName} id=${sbn.id}")
         if (ringNotifs.remove(sbn.key)) {
             ringIncoming.remove(sbn.key)
             // Drop the rainbow only once the dialer has no live call left:
@@ -410,7 +351,7 @@ class LedNotificationListenerService : NotificationListenerService() {
      * A live telephony (SIM) call notification from the dialer. NOT a
      * missed-call row (channel "missed_calls", no CALL category, no
      * answer/decline actions) - those pass through as a plain notify so
-     * the daemon's dialer.c missed-call verification can claim them.
+     * the consumer's missed-call verification can claim them.
      */
     private fun isSimCallNotification(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName != dialerPkg) return false
@@ -463,7 +404,7 @@ class LedNotificationListenerService : NotificationListenerService() {
     }
 
     companion object {
-        private const val ACTION_POST_TEST = "com.bastet.lednls.POST_TEST"
+        private const val ACTION_POST_TEST = "com.bastet.notybridge.POST_TEST"
 
         /** Live service instance while the process is up; null when dead.
          *  ReloadReceiver pokes this directly - no startService (blocked

@@ -1,13 +1,13 @@
-# noty-bridge - headless notification bridge
+# noty-bridge - standalone notification bridge
 
 A config-driven `NotificationListenerService` that turns Android
 notification events into text lines for any consumer over abstract Unix
-sockets. No UI, headless, single APK (`com.bastet.lednls`).
+sockets. No UI, headless, single APK (`com.bastet.notybridge`).
 
-Decoupled from the [shark8-led-daemon](https://github.com/nalbe/shark8-led-daemon)
-project: **which event goes where, and in what form, is device-side config
-(`/data/local/tmp/lednls_bridge.json`) - no rebuild to serve a different
-daemon.**
+Pure transport: the app only observes notifications and forwards them. It
+needs no root, never touches `su`, and knows nothing about whatever
+process listens on the socket - consumer wiring lives entirely in the
+device-side config (`/data/local/tmp/notybridge.json`).
 
 ## What it does
 
@@ -41,8 +41,9 @@ in a rule `line`: `$type $action $pkg $id $key $reason $incoming $on`.
 
 ### The default contract (no config file)
 
-No `lednls_bridge.json` = built-in defaults that reproduce the classic
-chgd contract 1:1 - the default rule set renders:
+No `notybridge.json` = built-in defaults that reproduce the classic
+notification-LED consumer contract 1:1 over the abstract socket
+`noty_bus`:
 
 ```
 ENQ <pkg> <id>          notification posted
@@ -58,79 +59,70 @@ PULSE <0|1>             Settings.System notification_light_pulse changed
 On every socket connect the app writes `PING` (liveness probe, the
 consumer answers `PONG`) and **replays** its live state into that sink -
 screen, active RING/VOIP, every active notification - so a consumer
-restart mid-call re-arms cleanly. Only consumer -> app traffic is
-`PONG` (ignored) and `WD <ms>` (keepalive cadence push).
+restart mid-call re-arms cleanly. The only consumer -> app line is
+`PONG` (ignored).
 
 ## Config
 
-Optional JSON at **`/data/local/tmp/lednls_bridge.json`** (adb-writable).
+Optional JSON at **`/data/local/tmp/notybridge.json`** (adb-writable).
 Apply without touching the running service:
 
 ```
-adb shell am broadcast -a com.bastet.lednls.RELOAD_CONFIG
+adb shell am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
 ```
 
 The broadcast pokes the live service directly. The config is also
-re-checked by mtime on every watchdog tick, so editing the file with any
-tool applies within one cadence even without the broadcast.
+re-checked by mtime on a 10s poller, so editing the file with any tool
+applies automatically even without the broadcast.
 
 ```jsonc
 {
-  // discovery mode: mirror every normalized event to logcat ("led-nls"
+  // discovery mode: mirror every normalized event to logcat ("notybridge"
   // tag, "EVENT" prefix) BEFORE rule matching; independent of
   // rules/sinks. Turn it on, watch the bus, write your rules - see
   // "Discover what to route".
   "logAll": false,
 
-  // keepalive cadence for daemon supervision, ms; 0 = off.
-  // the consumer's "WD <ms>" push OVERWRITES this field (persisted
-  // back into this file via su), so the value survives app restarts
-  "watchdogMs": 60000,
-
-  // daemon to supervise (pidof name) and restart path
-  "daemonName": "chgd",
-  "daemonPath": "/data/adb/modules/led_hal_root/chgd",
-
-  // bridge state mirror for consumers (GUI etc.) - written by the
-  // DAEMON, read by the app's consumers; the app itself never writes it
-  "statusPath": "/data/local/tmp/lednls.status",
-
   // call classification package lists
   "dialerPkg": "com.google.android.dialer",
   "voipPkgs": ["org.telegram.messenger", "com.whatsapp"],
 
-  // delivery endpoints: "socket" (abstract Unix) or "logcat"
+  // delivery endpoints: "socket" (abstract Unix) or "logcat".
+  // name = sink key; for a socket it is also the abstract socket name.
   "sinks": [
-    { "type": "socket", "name": "chgd_noty" },
+    { "type": "socket", "name": "noty_bus" },
     { "type": "logcat", "name": "log" }
   ],
 
   // routing: event -> rule filter -> sink, line rendered with $vars.
-  // RULES BELOW ARE THE BUILT-IN DEFAULTS, listed verbatim from code:
   // every rule must pin the action explicitly - a missing/`*` action
   // matches BOTH polarities (e.g. an unfiltered "ring" rule would render
   // RING_ON for ring-off too).
   "rules": [
-    { "event": "notify", "action": "posted",  "pkg": "*", "to": "chgd", "line": "ENQ $pkg $id" },
-    { "event": "notify", "action": "removed", "pkg": "*", "to": "chgd", "line": "CAN $pkg $id" },
-    { "event": "ring",   "action": "on",      "pkg": "*", "to": "chgd", "line": "RING_ON $incoming" },
-    { "event": "ring",   "action": "off",     "pkg": "*", "to": "chgd", "line": "RING_OFF" },
-    { "event": "voip",   "action": "on",      "pkg": "*", "to": "chgd", "line": "VOIP_ON $pkg" },
-    { "event": "voip",   "action": "off",     "pkg": "*", "to": "chgd", "line": "VOIP_OFF $pkg" },
-    { "event": "screen", "action": "on",      "pkg": "*", "to": "chgd", "line": "SCREEN 1" },
-    { "event": "screen", "action": "off",     "pkg": "*", "to": "chgd", "line": "SCREEN 0" },
-    { "event": "pulse",  "action": "on",      "pkg": "*", "to": "chgd", "line": "PULSE 1" },
-    { "event": "pulse",  "action": "off",     "pkg": "*", "to": "chgd", "line": "PULSE 0" }
+    { "event": "notify", "action": "posted",  "pkg": "*", "to": "noty_bus", "line": "ENQ $pkg $id" },
+    { "event": "notify", "action": "removed", "pkg": "*", "to": "noty_bus", "line": "CAN $pkg $id" },
+    { "event": "ring",   "action": "on",      "pkg": "*", "to": "noty_bus", "line": "RING_ON $incoming" },
+    { "event": "ring",   "action": "off",     "pkg": "*", "to": "noty_bus", "line": "RING_OFF" },
+    { "event": "voip",   "action": "on",      "pkg": "*", "to": "noty_bus", "line": "VOIP_ON $pkg" },
+    { "event": "voip",   "action": "off",     "pkg": "*", "to": "noty_bus", "line": "VOIP_OFF $pkg" },
+    { "event": "screen", "action": "on",      "pkg": "*", "to": "noty_bus", "line": "SCREEN 1" },
+    { "event": "screen", "action": "off",     "pkg": "*", "to": "noty_bus", "line": "SCREEN 0" },
+    { "event": "pulse",  "action": "on",      "pkg": "*", "to": "noty_bus", "line": "PULSE 1" },
+    { "event": "pulse",  "action": "off",     "pkg": "*", "to": "noty_bus", "line": "PULSE 0" }
   ]
 }
 ```
 
+Most fields fall back to defaults per-field, so a config can be minimal
+(e.g. specify only `sinks`/`rules`, or just one key). A broken file never
+kills the bridge - each failed field drops back to its default.
+
 Rule fields: `event` (`notify`|`ring`|`voip`|`screen`|`pulse`|`*`),
 `action` (`posted`|`removed`|`on`|`off`, or omit/`*` for any), `pkg`
-(exact, `prefix*` glob, or `*`), `to` (sink name), `line` (template).
+(exact, `prefix*` glob, or `*`), `to` (sink key), `line` (template).
 
 **Extending without code:** prune the rules to forward only what you
-need; point `to` at your own socket; switch a `line` to your own format;
+need; point `to` at your own sink; switch a `line` to your own format;
 route events to `log` for a logcat mirror; add a second socket sink for a
 second consumer.
 
@@ -140,8 +132,8 @@ Not sure which events a package produces, or what a rule should render?
 Set `"logAll": true`, apply, and watch the raw bus:
 
 ```
-adb shell am broadcast -a com.bastet.lednls.RELOAD_CONFIG
-adb logcat -s led-nls:* | grep ' EVENT '
+adb shell am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
+adb logcat -s notybridge:* | grep ' EVENT '
 ```
 
 Every event is mirrored to logcat **before** rule matching (rules are
@@ -169,25 +161,13 @@ EVENT screen off pkg= id=-1 key= reason=0 incoming=0 on=0
   end-call/hang-up actions. A plain chat message matches none of those
   and takes the normal notify path.
 
-## Daemon supervision (watchdog)
-
-At `watchdogMs` cadence (config value, or consumer `WD` push, or 60000
-default; `0` disables) the app asks su whether the daemon binary is
-alive (`pidof`) and restarts it when not (`setsid <daemonPath> &`).
-The system rebinds notification listeners on its own, so the supervisor
-outlives any shell keepalive.
-
-Pulse disarms fall back to `kill -USR2` over su only when no socket is
-connected (a non-root path unthinkable on this kernel); with a live
-socket the pulse event carries it.
-
 ## Requirements
 
 - **Notification access** (Settings -> Special app access -> Notification
-  access -> LED NLS) - required for the listener itself.
-- **Root** (KernelSU / Magisk) - only for the watchdog (pidof/restart),
-  the `WD`-persist write-back and the SIGUSR2 fallback. Plain event
-  forwarding to a socket needs no root.
+  access -> NotyBridge) - required for the listener itself.
+- **No root.** The app never calls `su`; it only reads its own config and
+  writes to an abstract Unix socket. Whatever consumes the socket (and
+  any supervision of that consumer) is the consumer's own business.
 - Android 10+ (minSdk 29).
 
 ## Build
@@ -198,13 +178,12 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
 Self-test from the shell (posts a test notification through the bridge):
-`adb shell am startservice -n com.bastet.lednls/.LedNotificationListenerService -a com.bastet.lednls.POST_TEST`
+`adb shell am startservice -n com.bastet.notybridge/.LedNotificationListenerService -a com.bastet.notybridge.POST_TEST`
 
 ## Files
 
-- `LedNotificationListenerService.kt` - observer front, call classifiers, replay, watchdog
-- `BridgeConfig.kt` - config parse + defaults, `WD` persist
+- `LedNotificationListenerService.kt` - observer front, call classifiers, replay, config reload poller
+- `BridgeConfig.kt` - config parse + defaults
 - `EventRouter.kt` - `BridgeEvent` + rule matching + `$vars` render + `logAll` mirror
 - `Sinks.kt` - socket / logcat sinks, per-sink reconnect loops
 - `ReloadReceiver.kt` - RELOAD_CONFIG broadcast entry (live-instance poke)
-- `RootShell.kt` / `Su.kt` / `SuShell.kt` - root shell plumbing for the watchdog paths
