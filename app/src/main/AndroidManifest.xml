@@ -5,6 +5,8 @@
 
     <application
         android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false">
 
         <!-- Notification bridge: feeds any consumer over an abstract
@@ -12,7 +14,7 @@
              service - install alongside your consumer, grant notification
              access once. -->
         <service
-            android:name=".LedNotificationListenerService"
+            android:name=".NotificationBridgeService"
             android:label="Notification bridge"
             android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
@@ -23,10 +25,11 @@
 
         <!-- Reload trigger: am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
              (or any writer of /data/local/tmp/notybridge.json) applies
-             the fresh rule set without touching the running service. -->
+             the fresh rule set without touching the running service. This
+             is the only way to re-read the config - there is no polling. -->
         <receiver
             android:name=".ReloadReceiver"
-            android:label="LED bridge config reload"
+            android:label="NotyBridge config reload"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.bastet.notybridge.RELOAD_CONFIG" />

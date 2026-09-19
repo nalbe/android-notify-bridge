@@ -11,8 +11,8 @@ import java.io.File
  * adb-writable) turns the bridge into a routing engine: each observed
  * event is matched against [Rule]s and forwarded to a [SinkCfg] as a
  * rendered text line. When the file is absent every field falls back to
- * the built-in defaults below. Re-read happens on mtime change; a
- * reload broadcast also applies.
+ * the built-in defaults below. Re-read happens on the RELOAD_CONFIG
+ * broadcast (or when the service (re)starts) - no polling.
  */
 data class BridgeConfig(
     val dialerPkg: String,

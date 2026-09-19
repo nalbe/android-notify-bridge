@@ -25,16 +25,16 @@ class LogSink(override val name: String) : Sink {
 
 /**
  * One abstract-namespace Unix socket transport, one reconnect loop thread
- * each. On connect the caller replays its live state [onConnect]; consumer
- * -> app lines (PONG etc.) go to [onLine]. Send is fire-and-forget:
+ * each. On connect the caller replays its live state [onConnect]. The
+ * socket is strictly one-way: this app only writes, it never reads a
+ * consumer line (no command channel exists). Send is fire-and-forget:
  * while the loop is away the line is dropped, exactly like the old single
  * socket, per sink.
  */
 class SocketSink(
     override val name: String,
     private val sockName: String,
-    private val onConnect: (Sink) -> Unit,
-    private val onLine: (String) -> Unit
+    private val onConnect: (Sink) -> Unit
 ) : Sink {
 
     @Volatile
@@ -81,10 +81,6 @@ class SocketSink(
                         LocalSocketAddress(sockName, LocalSocketAddress.Namespace.ABSTRACT)
                     )
                     it.soTimeout = 0
-                    // Round-trip probe: confirms the write path and makes the
-                    // consumer server mark the client in its accept log.
-                    it.outputStream.write("PING\n".toByteArray(StandardCharsets.UTF_8))
-                    it.outputStream.flush()
                 }
             } catch (_: Exception) {
                 sleep(2000)
@@ -105,7 +101,9 @@ class SocketSink(
         }
     }
 
-    /** Block until EOF; a read timeout just means "no traffic". */
+    /** Block until EOF; a read timeout just means "no traffic". Lines are
+     *  consumed and dropped - this app has no consumer command channel, the
+     *  read exists only to notice the peer closing for the reconnect loop. */
     private fun drain(ls: LocalSocket) {
         try {
             val r = BufferedReader(InputStreamReader(ls.inputStream))
@@ -116,7 +114,6 @@ class SocketSink(
                     continue
                 }
                 if (line == null) break
-                onLine(line)
             }
         } catch (_: Exception) {
         }
@@ -132,7 +129,6 @@ class SocketSink(
 /** Holds every configured sink by rule target name. Rebuilt on reload. */
 class SinkRegistry(
     config: BridgeConfig,
-    private val onSocketLine: (String) -> Unit,
     private val onSocketConnect: (Sink) -> Unit
 ) {
 
@@ -141,7 +137,7 @@ class SinkRegistry(
     init {
         for (cfg in config.sinks) {
             val s: Sink = if (cfg.isSocket)
-                SocketSink(cfg.name, cfg.name, onSocketConnect, onSocketLine)
+                SocketSink(cfg.name, cfg.name, onSocketConnect)
             else
                 LogSink(cfg.name.ifEmpty { "log" })
             sinks[cfg.name.ifEmpty { "log" }] = s

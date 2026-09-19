@@ -16,7 +16,6 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import java.io.File
 import java.util.Collections
 
 /**
@@ -31,7 +30,7 @@ import java.util.Collections
  *   ENQ <pkg> <id> / CAN <pkg> <id>
  *   RING_ON <0|1> / RING_OFF
  *   VOIP_ON <pkg> / VOIP_OFF <pkg>
- *   SCREEN <0|1>, PULSE <0|1>, PING -> PONG
+ *   SCREEN <0|1>, PULSE <0|1>
  *
  * Observed bus is a superset of the old transport: notify / ring / voip /
  * screen / pulse events with normalized fields; SIM- and messenger-call
@@ -39,8 +38,8 @@ import java.util.Collections
  * raw notification carries no "this is a call" marker.
  *
  * This app is a pure transport: it never supervises, restarts or otherwise
- * reaches into any consumer (daemon) - the config is re-read on mtime
- * change only so an edit applies without a broadcast.
+ * reaches into any consumer (daemon). The config is re-read only when
+ * asked to: on service (re)start or on the RELOAD_CONFIG broadcast.
  *
  * Threading: the system may call onListenerConnected() repeatedly (GSI
  * rebinds, process freezes). Each socket sink owns one reconnect loop
@@ -48,7 +47,7 @@ import java.util.Collections
  * thread closes its own socket, so a stale reader can never close a fresh
  * connection.
  */
-class LedNotificationListenerService : NotificationListenerService() {
+class NotificationBridgeService : NotificationListenerService() {
 
     /** Current resolved config; swapped atomically on reload. */
     @Volatile
@@ -58,7 +57,6 @@ class LedNotificationListenerService : NotificationListenerService() {
     @Volatile
     private var sinks: SinkRegistry? = null
 
-    private var reload: Thread? = null
     private var pulseObserver: ContentObserver? = null
     private var screenReceiver: BroadcastReceiver? = null
     private val loopLock = Object()
@@ -67,8 +65,6 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         applyConfig()
-        // Config reload first so the fresh rules are live when loops fire.
-        startReload()
         startSinks()
     }
 
@@ -79,17 +75,17 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     private fun postTestNotification() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        if (nm.getNotificationChannel("ledtest") == null) {
+        if (nm.getNotificationChannel("bridgetest") == null) {
             nm.createNotificationChannel(
-                NotificationChannel("ledtest", "LED test", NotificationManager.IMPORTANCE_HIGH)
+                NotificationChannel("bridgetest", "Bridge test", NotificationManager.IMPORTANCE_HIGH)
             )
         }
         nm.notify(
             4242,
-            Notification.Builder(this, "ledtest")
+            Notification.Builder(this, "bridgetest")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("LED bridge test")
-                .setContentText("ENQ should hit the socket consumer and arm the LED")
+                .setContentTitle("Bridge self-test")
+                .setContentText("ENQ should hit the socket consumer and arm the bridge output")
                 .build()
         )
         android.util.Log.i("notybridge", "self-test notification posted")
@@ -104,29 +100,18 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     // ------------------------------------------------------------ config
 
-    /** Load (or reload) config, rebuild sinks, restart the reloader. */
+    /** Load (or reload) config and rebuild sinks/rules. Triggered on service
+     *  (re)start and on every RELOAD_CONFIG broadcast - no polling. */
     private fun applyConfig() {
         val cfg = BridgeConfig.load()
         synchronized(loopLock) {
             val old = sinks
             if (old != null) old.stopAll()
-            sinks = SinkRegistry(cfg, onSocketLine, onSocketConnect).also { it.startAll() }
+            sinks = SinkRegistry(cfg, onSocketConnect).also { it.startAll() }
             config = cfg
-            applyReloadLocked()
         }
         android.util.Log.i("notybridge",
             "config: ${cfg.rules.size} rules, ${cfg.sinks.size} sinks")
-    }
-
-    private var lastCfgMtime = 0L
-
-    /** Cheap mtime re-check; the RELOAD broadcast is the instant path. */
-    private fun maybeReloadOnMtime() {
-        val m = runCatching { File(BridgeConfig.CONFIG_PATH).lastModified() }.getOrDefault(0L)
-        if (m != 0L && m != lastCfgMtime) {
-            lastCfgMtime = m
-            applyConfig()
-        }
     }
 
     // ------------------------------------------------------------ sources
@@ -205,7 +190,6 @@ class LedNotificationListenerService : NotificationListenerService() {
             screenReceiver?.let { runCatching { unregisterReceiver(it) } }
             screenReceiver = null
         }
-        reload?.interrupt()
         sinks?.stopAll()
         super.onDestroy()
     }
@@ -255,46 +239,10 @@ class LedNotificationListenerService : NotificationListenerService() {
         replayInto(sink, cfg)
     }
 
-    /** Consumer -> app lines. Only PONG is expected (liveness echo, ignores
-     *  app's PING); misc pushes are discarded - this app runs no state
-     *  machine against the consumer. */
-    private val onSocketLine: (String) -> Unit = { _ -> }
-
     // ------------------------------------------------------------ loop
 
     private fun startSinks() {
         sinks?.startAll()
-    }
-
-    // ------------------------------------------------------------ reload
-
-    private fun startReload() {
-        applyReloadLocked()
-    }
-
-    /** Start/keep the config reload poller. A live poller is left
-     *  untouched (rebind storms must not spawn duplicates). */
-    private fun applyReloadLocked() {
-        val cur = reload
-        if (cur?.isAlive == true) return
-        val t = Thread({ reloadLoop() }, "notybridge-reload")
-        t.isDaemon = true
-        t.start()
-        reload = t
-        android.util.Log.i("notybridge", "config reload poller on")
-    }
-
-    /** Pure mtime re-check so a config edit applies without a broadcast.
-     *  No root, no consumer knowledge: this app supervises nothing. */
-    private fun reloadLoop() {
-        while (!Thread.currentThread().isInterrupted) {
-            try {
-                maybeReloadOnMtime()
-            } catch (_: Exception) {
-                // keep the poller alive, retry next tick
-            }
-            try { Thread.sleep(10000) } catch (_: InterruptedException) { break }
-        }
     }
 
     // ------------------------------------------------------------ events
@@ -322,7 +270,7 @@ class LedNotificationListenerService : NotificationListenerService() {
             ringIncoming.remove(sbn.key)
             // Drop the rainbow only once the dialer has no live call left:
             // a ringing->ongoing swap / decline->redial reuses ids and must
-            // not flicker the LED off between the two.
+            // not flicker the output off between the two.
             val still = ringNotifs.any { it.split('|').getOrNull(1) == sbn.packageName }
             if (!still) emit(BridgeEvent("ring", "off", pkg = sbn.packageName))
         }
@@ -411,12 +359,12 @@ class LedNotificationListenerService : NotificationListenerService() {
          *  from a background receiver on Android 8+, and a dead process
          *  applies its config on the first bind anyway). */
         @Volatile
-        private var instance: LedNotificationListenerService? = null
+        private var instance: NotificationBridgeService? = null
 
         fun pokeReload() {
+            // No mtime optimisation needed: reloads are command-only now,
+            // so every broadcast unconditionally re-reads + rebuilds.
             val s = instance ?: return
-            s.lastCfgMtime =
-                runCatching { File(BridgeConfig.CONFIG_PATH).lastModified() }.getOrDefault(0L)
             s.applyConfig()
         }
     }

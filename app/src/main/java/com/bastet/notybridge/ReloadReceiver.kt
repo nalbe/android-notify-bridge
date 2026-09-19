@@ -16,6 +16,6 @@ import android.content.Intent
  */
 class ReloadReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        LedNotificationListenerService.pokeReload()
+        NotificationBridgeService.pokeReload()
     }
 }

@@ -16,3 +16,7 @@ local.properties
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Tracked distribution APK (fresh release build, committed intentionally)
+!release/
+!release/*.apk

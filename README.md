@@ -42,7 +42,7 @@ in a rule `line`: `$type $action $pkg $id $key $reason $incoming $on`.
 ### The default contract (no config file)
 
 No `notybridge.json` = built-in defaults that reproduce the classic
-notification-LED consumer contract 1:1 over the abstract socket
+notification consumer contract 1:1 over the abstract socket
 `noty_bus`:
 
 ```
@@ -56,11 +56,10 @@ SCREEN <0|1>            screen off/on
 PULSE <0|1>             Settings.System notification_light_pulse changed
 ```
 
-On every socket connect the app writes `PING` (liveness probe, the
-consumer answers `PONG`) and **replays** its live state into that sink -
-screen, active RING/VOIP, every active notification - so a consumer
-restart mid-call re-arms cleanly. The only consumer -> app line is
-`PONG` (ignored).
+On every socket connect the app **replays** its live state into that
+sink - screen, active RING/VOIP, every active notification - so a
+consumer restart mid-call re-arms cleanly. The socket is strictly
+one-way; the app never reads a consumer line.
 
 ## Config
 
@@ -71,9 +70,9 @@ Apply without touching the running service:
 adb shell am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
 ```
 
-The broadcast pokes the live service directly. The config is also
-re-checked by mtime on a 10s poller, so editing the file with any tool
-applies automatically even without the broadcast.
+The broadcast pokes the live service directly and re-reads + rebuilds
+everything from the file. There is no polling - this broadcast (or the
+service (re)start) is the only way the config is re-read.
 
 ```jsonc
 {
@@ -117,9 +116,10 @@ Most fields fall back to defaults per-field, so a config can be minimal
 (e.g. specify only `sinks`/`rules`, or just one key). A broken file never
 kills the bridge - each failed field drops back to its default.
 
-Rule fields: `event` (`notify`|`ring`|`voip`|`screen`|`pulse`|`*`),
-`action` (`posted`|`removed`|`on`|`off`, or omit/`*` for any), `pkg`
-(exact, `prefix*` glob, or `*`), `to` (sink key), `line` (template).
+Rule fields:
+  `event` (`notify`|`ring`|`voip`|`screen`|`pulse`|`*`),
+  `action` (`posted`|`removed`|`on`|`off`, or omit/`*` for any), `pkg`
+  (exact, `prefix*` glob, or `*`), `to` (sink key), `line` (template).
 
 **Extending without code:** prune the rules to forward only what you
 need; point `to` at your own sink; switch a `line` to your own format;
@@ -178,11 +178,11 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
 Self-test from the shell (posts a test notification through the bridge):
-`adb shell am startservice -n com.bastet.notybridge/.LedNotificationListenerService -a com.bastet.notybridge.POST_TEST`
+`adb shell am startservice -n com.bastet.notybridge/.NotificationBridgeService -a com.bastet.notybridge.POST_TEST`
 
 ## Files
 
-- `LedNotificationListenerService.kt` - observer front, call classifiers, replay, config reload poller
+- `NotificationBridgeService.kt` - observer front, call classifiers, replay, config reload on broadcast
 - `BridgeConfig.kt` - config parse + defaults
 - `EventRouter.kt` - `BridgeEvent` + rule matching + `$vars` render + `logAll` mirror
 - `Sinks.kt` - socket / logcat sinks, per-sink reconnect loops
