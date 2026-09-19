@@ -38,7 +38,19 @@ data class BridgeEvent(
  */
 object EventRouter {
 
+    /** Discovery mirror: with logAll=true every event lands here BEFORE
+     *  rule matching, rendered with all normalized fields. Independent of
+     *  sinks/rules - a config file is not even needed to watch the bus. */
+    fun mirror(e: BridgeEvent, config: BridgeConfig) {
+        if (!config.logAll) return
+        android.util.Log.i("led-nls",
+            "EVENT ${e.type} ${e.action} pkg=${e.pkg} id=${e.id} key=${e.key} " +
+                "reason=${e.reason} incoming=${if (e.incoming) "1" else "0"} " +
+                "on=${if (e.on) "1" else "0"}")
+    }
+
     fun emit(e: BridgeEvent, config: BridgeConfig, sinks: SinkRegistry) {
+        mirror(e, config)
         for (r in config.rules) {
             if (!r.matches(e)) continue
             val sink = sinks[r.to] ?: continue

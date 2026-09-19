@@ -1,6 +1,7 @@
 # Gradle / Android build
 .gradle/
 build/
+release/
 local.properties
 *.apk
 

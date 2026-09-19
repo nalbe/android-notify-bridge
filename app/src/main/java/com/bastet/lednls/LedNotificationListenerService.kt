@@ -75,13 +75,7 @@ class LedNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_POST_TEST -> postTestNotification()
-            ACTION_RELOAD -> {
-                lastCfgMtime = runCatching { File(BridgeConfig.CONFIG_PATH).lastModified() }.getOrDefault(0L)
-                applyConfig()
-            }
-        }
+        if (intent?.action == ACTION_POST_TEST) postTestNotification()
         return START_STICKY
     }
 
@@ -105,6 +99,7 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         registerPulseObserver()
         registerScreenReceiver()
     }
@@ -214,6 +209,7 @@ class LedNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         synchronized(loopLock) {
             pulseObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
             pulseObserver = null
@@ -243,6 +239,7 @@ class LedNotificationListenerService : NotificationListenerService() {
         val callKeys = calls
 
         fun fwd(e: BridgeEvent) {
+            EventRouter.mirror(e, cfg)
             for (r in cfg.rules)
                 if (r.matches(e) && r.to == sink.name)
                     sink.send(e.render(r.line))
@@ -467,6 +464,19 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     companion object {
         private const val ACTION_POST_TEST = "com.bastet.lednls.POST_TEST"
-        internal const val ACTION_RELOAD = "com.bastet.lednls.RELOAD_CONFIG"
+
+        /** Live service instance while the process is up; null when dead.
+         *  ReloadReceiver pokes this directly - no startService (blocked
+         *  from a background receiver on Android 8+, and a dead process
+         *  applies its config on the first bind anyway). */
+        @Volatile
+        private var instance: LedNotificationListenerService? = null
+
+        fun pokeReload() {
+            val s = instance ?: return
+            s.lastCfgMtime =
+                runCatching { File(BridgeConfig.CONFIG_PATH).lastModified() }.getOrDefault(0L)
+            s.applyConfig()
+        }
     }
 }

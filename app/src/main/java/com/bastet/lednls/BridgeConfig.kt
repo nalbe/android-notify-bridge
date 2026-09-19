@@ -26,7 +26,12 @@ data class BridgeConfig(
     val dialerPkg: String,
     val voipPkgs: Set<String>,
     val sinks: List<SinkCfg>,
-    val rules: List<Rule>
+    val rules: List<Rule>,
+    /** Discovery mode. When true every normalized event on the bus is
+     *  mirrored to logcat (tag "led-nls", prefix "EVENT") before rule
+     *  matching - independent of sinks/rules. Watch it to learn exactly
+     *  what to put into rules / voipPkgs / dialerPkg. */
+    val logAll: Boolean
 ) {
 
     /** A delivery endpoint. type = "socket" (abstract Unix domain) or
@@ -98,7 +103,8 @@ data class BridgeConfig(
                 "com.google.android.apps.tachyon"
             ),
             sinks = DEFAULT_SINKS,
-            rules = DEFAULT_RULES
+            rules = DEFAULT_RULES,
+            logAll = false
         )
 
         private fun arr(o: JSONObject, key: String): List<String> {
@@ -147,7 +153,8 @@ data class BridgeConfig(
                 dialerPkg = o.optString("dialerPkg", DEFAULT.dialerPkg),
                 voipPkgs = arr(o, "voipPkgs").ifEmpty { DEFAULT.voipPkgs.toList() }.toSet(),
                 sinks = sinks.ifEmpty { DEFAULT_SINKS },
-                rules = rules.ifEmpty { DEFAULT_RULES }
+                rules = rules.ifEmpty { DEFAULT_RULES },
+                logAll = o.optBoolean("logAll", DEFAULT.logAll)
             )
         }
 
