@@ -54,6 +54,11 @@ The client sends `PING` on connect and replays its live state (screen,
 active RING/VOIP, active notifications). Only consumer -> app traffic is
 `PONG` / `WD <ms>`.
 
+`WD <ms>` is canonical for the keepalive: the bridge **writes it back into
+`lednls_bridge.json`** (`watchdogMs` field, via su) and applies it at once,
+so the value is persistent and survives app restarts. A stale GUI/daemon
+keepalive key in the consumer's own config simply stops mattering.
+
 ## Config
 
 Optional JSON at **`/data/local/tmp/lednls_bridge.json`** (adb-writable).
@@ -69,7 +74,8 @@ adb shell am broadcast -a com.bastet.lednls.RELOAD_CONFIG
 ```jsonc
 {
   // keepalive cadence for daemon supervision, ms; 0 = off.
-  // absent -> consumer's "WD <ms>" push wins (chgd channel)
+  // the consumer's "WD <ms>" push OVERWRITES this field in the file,
+  // so the daemon/GUI scratch key can go away entirely
   "watchdogMs": 60000,
 
   // daemon to supervise (pidof name + restart path)

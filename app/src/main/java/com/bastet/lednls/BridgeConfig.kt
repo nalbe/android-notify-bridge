@@ -16,8 +16,9 @@ import java.io.File
  * Re-read happens on mtime change; a reload broadcast also applies.
  */
 data class BridgeConfig(
-    /** Explicit keepalive cadence from config. null = let the consumer
-     *  push "WD <ms>" over the socket (the classic chgd channel). */
+    /** Keepalive cadence. Lived from config, but the consumer's "WD <ms>"
+     *  push overwrites it (persisted back into the config file), so the
+     *  consumer owns the value until its own keepalive key is gone. */
     val watchdogMs: Long?,
     val daemonName: String,
     val daemonPath: String,
@@ -148,6 +149,30 @@ data class BridgeConfig(
                 sinks = sinks.ifEmpty { DEFAULT_SINKS },
                 rules = rules.ifEmpty { DEFAULT_RULES }
             )
+        }
+
+        /** Write the authoritative keepalive cadence back into the device
+         *  config file, so the consumer's "WD <ms>" push is persistent and
+         *  survives a process restart. The JSON is shipped to su as base64 -
+         *  no shell quoting hazards. Best effort: runtime-only on su failure. */
+        fun persistWatchdogMs(ms: Long) {
+            val f = File(CONFIG_PATH)
+            val cur = try {
+                if (f.exists()) JSONObject(f.readText()) else JSONObject()
+            } catch (_: Exception) {
+                JSONObject()
+            }
+            cur.put("watchdogMs", ms)
+            val json = cur.toString()
+            val b64 = android.util.Base64.encodeToString(
+                json.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP
+            )
+            try {
+                SuShell.exec("echo $b64 | base64 -d > $CONFIG_PATH")
+                android.util.Log.i("led-nls", "watchdogMs=$ms persisted to $CONFIG_PATH")
+            } catch (e: Exception) {
+                android.util.Log.w("led-nls", "watchdogMs persist failed (no su?): $e")
+            }
         }
 
         private fun parseRule(o: JSONObject): Rule? {

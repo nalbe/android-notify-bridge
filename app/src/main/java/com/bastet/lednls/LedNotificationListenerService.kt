@@ -60,11 +60,6 @@ class LedNotificationListenerService : NotificationListenerService() {
     @Volatile
     private var sinks: SinkRegistry? = null
 
-    /** "WD <ms>" pushed by the consumer; only used when config does not
-     *  set watchdogMs explicitly. */
-    @Volatile
-    private var daemonWd: Long? = null
-
     private var watchdog: Thread? = null
     private var pulseObserver: ContentObserver? = null
     private var screenReceiver: BroadcastReceiver? = null
@@ -275,18 +270,21 @@ class LedNotificationListenerService : NotificationListenerService() {
     }
 
     /** Consumer -> app lines: only "WD <ms>" matters (the classic cadence
-     *  push). PONG is a probe echo we ignore. WD applies only when the
-     *  config does not own watchdogMs. */
+     *  push). PONG is a probe echo we ignore. WD is the authoritative
+     *  keepalive: it is written back into the config file (persistent) and
+     *  applied immediately. */
     private val onSocketLine: (String) -> Unit = { line ->
         if (line.startsWith("WD ")) {
             val ms = line.substring(3).trim().toLongOrNull()
-            if (ms != null && config.watchdogMs == null) {    // config wins
+            if (ms != null && ms != config.watchdogMs) {
                 android.util.Log.i("led-nls", "watchdog pushed from consumer: ${ms}ms")
+                BridgeConfig.persistWatchdogMs(ms)
                 synchronized(loopLock) {
-                    if (daemonWd != ms) {
-                        daemonWd = ms
-                        applyWatchdogLocked()
-                    }
+                    config = config.copy(watchdogMs = ms)
+                    // the file we just wrote must not trip the mtime reload
+                    lastCfgMtime =
+                        runCatching { File(BridgeConfig.CONFIG_PATH).lastModified() }.getOrDefault(0L)
+                    applyWatchdogLocked()
                 }
             }
         }
@@ -300,7 +298,7 @@ class LedNotificationListenerService : NotificationListenerService() {
 
     // ------------------------------------------------------------ watchdog
 
-    private fun effectiveWd(): Long = config.watchdogMs ?: daemonWd ?: 60000L
+    private fun effectiveWd(): Long = config.watchdogMs ?: 60000L
 
     private fun startWatchdog() {
         applyWatchdogLocked()
