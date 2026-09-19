@@ -21,5 +21,17 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- Reload trigger: am broadcast -a com.bastet.lednls.RELOAD_CONFIG
+             (or any writer of /data/local/tmp/lednls_bridge.json) applies
+             the fresh rule set without touching the running service. -->
+        <receiver
+            android:name=".ReloadReceiver"
+            android:label="LED bridge config reload"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.bastet.lednls.RELOAD_CONFIG" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
