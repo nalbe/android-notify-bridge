@@ -1,0 +1,15 @@
+{
+  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. This fragment adds a voip app and a watched toggle without touching a main config.",
+  "voipPkgs": [
+    "org.example.myvoipapp"
+  ],
+  "watchedSettings": [
+    {
+      "_comment": "Example: forward Settings.System.some_toggle as event toggle 1/0.",
+      "table": "system",
+      "name": "some_toggle",
+      "event": "toggle",
+      "defaultOn": false
+    }
+  ]
+}

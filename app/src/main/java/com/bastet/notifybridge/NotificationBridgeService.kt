@@ -21,21 +21,22 @@ import java.util.Collections
 /**
  * NotificationListenerService - standalone headless notification bridge.
  *
- * Lives in its own APK (com.bastet.notifybridge). The whole forwarding policy
- * lives in an optional device-side config (/data/local/tmp/notifybridge.json):
- * which observed event goes where is a rule list, each rule rendering a
- * text line ("$pkg $id $key $incoming $on ...") into a configured sink
- * (abstract Unix socket, or logcat). No config file = built-in defaults
- * that reproduce the classic consumer contract:
- *   ENQ <pkg> <id> / CAN <pkg> <id>
- *   RING_ON <0|1> / RING_OFF
- *   VOIP_ON <pkg> / VOIP_OFF <pkg>
- *   SCREEN <0|1>, PULSE <0|1>
+ * Lives in its own APK (com.bastet.notifybridge). The whole forwarding
+ * policy lives in optional device-side config fragments
+ * (/data/local/tmp/notifybridge.json plus json files inside
+ * /data/local/tmp/notifybridge.d, see BridgeConfig): each observed event
+ * goes where the merged rule list says, each rule rendering a text line
+ * ("$pkg $id $key $incoming $on ...") into a configured sink (abstract
+ * Unix socket, or logcat). No config at all = the bridge is fully
+ * passive: no sinks, no rules, no observers, nothing sent.
  *
  * Observed bus is a superset of the old transport: notify / ring / voip /
  * screen / pulse events with normalized fields; SIM- and messenger-call
  * classification stays built-in (the package lists are config), because a
- * raw notification carries no "this is a call" marker.
+ * raw notification carries no "this is a call" marker. Settings toggles
+ * (the LED switch and anything else you want as a 0/1 bus event) are
+ * config too - see BridgeConfig.watchedSettings, nothing is hidden in
+ * code.
  *
  * This app is a pure transport: it never supervises, restarts or otherwise
  * reaches into any consumer (daemon). The config is re-read only when
@@ -49,19 +50,20 @@ import java.util.Collections
  */
 class NotificationBridgeService : NotificationListenerService() {
 
-    /** Current resolved config; swapped atomically on reload. */
+    /** Current resolved config; null = passive (no file or invalid).
+     *  Swapped atomically on reload. */
     @Volatile
-    private var config: BridgeConfig = BridgeConfig.DEFAULT
+    private var config: BridgeConfig? = null
 
-    /** Live sink registry; rebuilt on reload. */
+    /** Live sink registry; rebuilt on reload. Null while passive. */
     @Volatile
     private var sinks: SinkRegistry? = null
 
-    private var pulseObserver: ContentObserver? = null
+    private var settingObservers: MutableMap<String, ContentObserver>? = null
     private var screenReceiver: BroadcastReceiver? = null
     private val loopLock = Object()
 
-    private var lastPulseSent = -1
+    private val lastSettingSent = HashMap<String, Boolean>()
 
     override fun onListenerConnected() {
         applyConfig()
@@ -94,32 +96,47 @@ class NotificationBridgeService : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        registerPulseObserver()
-        registerScreenReceiver()
     }
 
     // ------------------------------------------------------------ config
 
     /** Load (or reload) config and rebuild sinks/rules. Triggered on service
-     *  (re)start and on every RELOAD_CONFIG broadcast - no polling. */
+     *  (re)start and on every RELOAD_CONFIG broadcast - no polling. A
+     *  missing or broken config means fully passive: sinks stopped, all
+     *  observers and receivers unregistered, no classification state kept. */
     private fun applyConfig() {
         val cfg = BridgeConfig.load()
+        var active: BridgeConfig? = null
         synchronized(loopLock) {
+            if (cfg == null || !cfg.isActive) {
+                sinks?.stopAll()
+                sinks = null
+                config = null
+                teardownSettingObservers()
+                teardownScreenReceiver()
+                val why = if (cfg == null) "absent/invalid" else "empty, no rules"
+                android.util.Log.i("notifybridge", "config $why: passive")
+                return
+            }
             val old = sinks
             if (old != null) old.stopAll()
             sinks = SinkRegistry(cfg, onSocketConnect).also { it.startAll() }
             config = cfg
+            active = cfg
+            ensureScreenReceiver()
+            syncSettingObservers(cfg)
         }
+        val a = active
         android.util.Log.i("notifybridge",
-            "config: ${cfg.rules.size} rules, ${cfg.sinks.size} sinks")
+            "config active: ${a?.rules?.size} rules, ${a?.sinks?.size} sinks, " +
+                "${a?.watchedSettings?.size} watched settings")
     }
 
     // ------------------------------------------------------------ sources
 
-    /** ACTION_SCREEN_OFF/ON -> screen event. No polling anywhere: this is
-     *  the only screen-state source the park logic needs on kernels with no
-     *  backlight uevent. */
-    private fun registerScreenReceiver() {
+    /** ACTION_SCREEN_OFF/ON -> screen event. Register/unregister strictly
+     *  follows config lifecyle: passive bridge has no receiver. */
+    private fun ensureScreenReceiver() {
         synchronized(loopLock) {
             if (screenReceiver != null) return
             val r = object : BroadcastReceiver() {
@@ -144,51 +161,99 @@ class NotificationBridgeService : NotificationListenerService() {
         }
     }
 
+    private fun teardownScreenReceiver() {
+        synchronized(loopLock) {
+            screenReceiver?.let { runCatching { unregisterReceiver(it) } }
+            screenReceiver = null
+        }
+    }
+
     /** Trusted live screen state from the framework (not sysfs). */
     private fun isInteractive(): Boolean {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         return pm.isInteractive
     }
 
-    /** System "Notification light" toggle, watched like stock SystemUI.
-     *  Any writer trips the observer and we forward a pulse event. */
-    private fun registerPulseObserver() {
+    /** Unregister every settings observer; called on teardown (passive
+     *  config) and at the start of every resync. */
+    private fun teardownSettingObservers() {
         synchronized(loopLock) {
-            if (pulseObserver != null) return
-            val o = object : ContentObserver(Handler(Looper.getMainLooper())) {
-                override fun onChange(selfChange: Boolean, uri: Uri?) {
-                    if (uri == null || uri.lastPathSegment != "notification_light_pulse") return
-                    val on = runCatching {
-                        Settings.System.getInt(contentResolver, "notification_light_pulse", 1) != 0
-                    }.getOrDefault(true)
-                    forwardPulse(on)
-                }
+            settingObservers?.values?.forEach {
+                runCatching { contentResolver.unregisterContentObserver(it) }
             }
-            contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, o)
-            pulseObserver = o
-            android.util.Log.i("notifybridge", "pulse observer on Settings.System")
+            settingObservers = null
         }
     }
 
-    /** Forward a toggle change as a pulse event; dropped while no sink is
-     *  connected - the consumer re-reads the toggle itself on its next
-     *  arm, and the connect replay covers a restart. */
-    private fun forwardPulse(on: Boolean) {
-        val v = if (on) 1 else 0
-        if (lastPulseSent == v) return        // dedupe Settings exit ack storms
-        lastPulseSent = v
-        emit(BridgeEvent("pulse", if (on) "on" else "off", on = on))
+    /** Watch every Settings key listed in the config (tables system /
+     *  global / secure, one ContentObserver per table). Any writer to a
+     *  watched key trips its table observer and we forward the polarity.
+     *  Rebuilt on every config apply - a reload alone picks up
+     *  watchedSettings changes, no service restart. */
+    private fun syncSettingObservers(cfg: BridgeConfig) {
+        synchronized(loopLock) {
+            teardownSettingObservers()
+            lastSettingSent.keys.retainAll(
+                cfg.watchedSettings.map { "${it.table}/${it.name}" }
+            )
+            if (cfg.watchedSettings.isEmpty()) return
+            val byTable = cfg.watchedSettings.groupBy { it.table }
+            val obs = HashMap<String, ContentObserver>()
+            for ((table, settings) in byTable) {
+                val uri = when (table) {
+                    "system" -> Settings.System.CONTENT_URI
+                    "global" -> Settings.Global.CONTENT_URI
+                    "secure" -> Settings.Secure.CONTENT_URI
+                    else -> null
+                } ?: continue
+                val active = settings.map { it.name }.toSet()
+                val o = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                    override fun onChange(selfChange: Boolean, uri: Uri?) {
+                        val name = uri?.lastPathSegment ?: return
+                        if (name !in active) return
+                        forwardSetting(table, name, cfg)
+                    }
+                }
+                contentResolver.registerContentObserver(uri, true, o)
+                obs[table] = o
+            }
+            settingObservers = obs
+            android.util.Log.i("notifybridge",
+                "watched settings: ${cfg.watchedSettings.size} on ${byTable.keys.sorted()}")
+        }
+    }
+
+    /** Forward a toggle change as its mapped event (see WatchedSetting);
+     *  dropped while no sink is connected - the consumer re-reads the
+     *  toggle itself on its next arm, and the connect replay covers a
+     *  restart. */
+    private fun forwardSetting(table: String, name: String, cfg: BridgeConfig) {
+        val ws = cfg.watchedSettings.firstOrNull { it.table == table && it.name == name }
+            ?: return
+        val raw = when (table) {
+            "system" -> Settings.System.getString(contentResolver, name)
+            "global" -> Settings.Global.getString(contentResolver, name)
+            "secure" -> Settings.Secure.getString(contentResolver, name)
+            else -> null
+        }
+        val on = when {
+            raw == null -> ws.defaultOn
+            else -> runCatching { raw.toInt() != 0 }.getOrDefault(ws.defaultOn)
+        }
+        val k = "$table/$name"
+        if (lastSettingSent[k] == on) return   // dedupe Settings exit ack storms
+        lastSettingSent[k] = on
+        emit(BridgeEvent(ws.event, if (on) "on" else "off", on = on, setting = name))
         if (!on && sinks?.anySocketConnected() == false)
-            android.util.Log.w("notifybridge", "pulse=0 but no socket; disarm missed")
+            android.util.Log.w("notifybridge",
+                "${ws.event}=0 but no socket; disarm missed")
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
         synchronized(loopLock) {
-            pulseObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
-            pulseObserver = null
-            screenReceiver?.let { runCatching { unregisterReceiver(it) } }
-            screenReceiver = null
+            teardownSettingObservers()
+            teardownScreenReceiver()
         }
         sinks?.stopAll()
         super.onDestroy()
@@ -197,7 +262,7 @@ class NotificationBridgeService : NotificationListenerService() {
     // ------------------------------------------------------------ routing
 
     private fun emit(e: BridgeEvent) {
-        val cfg = config
+        val cfg = config ?: return
         val rg = sinks ?: return
         EventRouter.emit(e, cfg, rg)
     }
@@ -236,7 +301,7 @@ class NotificationBridgeService : NotificationListenerService() {
 
     private val onSocketConnect: (Sink) -> Unit = { sink ->
         val cfg = config
-        replayInto(sink, cfg)
+        if (cfg != null) replayInto(sink, cfg)
     }
 
     // ------------------------------------------------------------ loop
@@ -248,6 +313,7 @@ class NotificationBridgeService : NotificationListenerService() {
     // ------------------------------------------------------------ events
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val cfg = config ?: return      // passive: nothing classified, nothing kept
         android.util.Log.i("notifybridge", "posted ${sbn.packageName} id=${sbn.id} key=${sbn.key}")
         if (isSimCallNotification(sbn)) {
             val incoming = simCallIsIncoming(sbn)
@@ -265,6 +331,7 @@ class NotificationBridgeService : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        val cfg = config ?: return      // passive: no bus, no bookkeeping
         android.util.Log.i("notifybridge", "removed ${sbn.packageName} id=${sbn.id}")
         if (ringNotifs.remove(sbn.key)) {
             ringIncoming.remove(sbn.key)
@@ -284,8 +351,8 @@ class NotificationBridgeService : NotificationListenerService() {
 
     // ------------------------------------------------------------ call detect
 
-    private val dialerPkg: String get() = config.dialerPkg
-    private val voipPkgs: Set<String> get() = config.voipPkgs
+    private val dialerPkg: String get() = config?.dialerPkg ?: ""
+    private val voipPkgs: Set<String> get() = config?.voipPkgs ?: emptySet()
 
     /** Keys of notifications classified as a live/incoming telephony call. */
     private val ringNotifs = Collections.synchronizedSet(HashSet<String>())

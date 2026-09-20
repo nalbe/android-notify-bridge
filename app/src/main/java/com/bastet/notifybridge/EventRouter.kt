@@ -3,12 +3,14 @@ package com.bastet.notifybridge
 /**
  * A single observed event on the bridge bus, fully normalized before it
  * ever reaches a rule:
- *   type   = notify | ring | voip | screen | pulse
+ *   type   = notify | ring | voip | screen | pulse (or any event from
+ *            a watchedSetting)
  *   action = posted | removed | on | off   (per type)
  *   pkg/id/key = the notification identity ("" / -1 / "" when n/a),
  *   reason     = onNotificationRemoved reason code,
  *   incoming   = freshly classified SIM-call direction,
- *   on         = screen / pulse polarity.
+ *   setting    = watched setting name that produced this event,
+ *   on         = screen / pulse / setting polarity.
  */
 data class BridgeEvent(
     val type: String,
@@ -18,6 +20,7 @@ data class BridgeEvent(
     val key: String = "",
     val reason: Int = 0,
     val incoming: Boolean = false,
+    val setting: String = "",
     val on: Boolean = false
 ) {
     fun render(line: String): String = line
@@ -28,6 +31,7 @@ data class BridgeEvent(
         .replace("\$key", key)
         .replace("\$reason", reason.toString())
         .replace("\$incoming", if (incoming) "1" else "0")
+        .replace("\$setting", setting)
         .replace("\$on", if (on) "1" else "0")
 }
 
@@ -46,7 +50,7 @@ object EventRouter {
         android.util.Log.i("notifybridge",
             "EVENT ${e.type} ${e.action} pkg=${e.pkg} id=${e.id} key=${e.key} " +
                 "reason=${e.reason} incoming=${if (e.incoming) "1" else "0"} " +
-                "on=${if (e.on) "1" else "0"}")
+                "setting=${e.setting} on=${if (e.on) "1" else "0"}")
     }
 
     fun emit(e: BridgeEvent, config: BridgeConfig, sinks: SinkRegistry) {

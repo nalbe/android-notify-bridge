@@ -7,7 +7,8 @@ sockets. No UI, headless, single APK (`com.bastet.notifybridge`).
 Pure transport: the app only observes notifications and forwards them. It
 needs no root, never touches `su`, and knows nothing about whatever
 process listens on the socket - consumer wiring lives entirely in the
-device-side config (`/data/local/tmp/notifybridge.json`).
+device-side config (`/data/local/tmp/notifybridge.json` plus
+`/data/local/tmp/notifybridge.d/*.json` fragments).
 
 ## What it does
 
@@ -39,22 +40,13 @@ Every event carries all normalized fields; irrelevant ones are empty/`-1`/`0`:
 `$on` as `1`/`0`, `$reason` as the removal reason code. Available `$vars`
 in a rule `line`: `$type $action $pkg $id $key $reason $incoming $on`.
 
-### The default contract (no config file)
+### No config = passive bridge
 
-No `notifybridge.json` = built-in defaults that reproduce the classic
-notification consumer contract 1:1 over the abstract socket
-`notify_bus`:
-
-```
-ENQ <pkg> <id>          notification posted
-CAN <pkg> <id>          notification removed
-RING_ON <0|1>           SIM call posted (1 incoming, 0 outgoing/ongoing)
-RING_OFF                last SIM call notification gone
-VOIP_ON <pkg>           messenger call posted
-VOIP_OFF <pkg>          messenger call notification gone
-SCREEN <0|1>            screen off/on
-PULSE <0|1>             Settings.System notification_light_pulse changed
-```
+There is no built-in default contract anymore. With no `notifybridge.json`
+and no fragments the bridge is fully passive: no sinks, no rules, no
+observers, nothing sent. The config IS the whole policy - the closest
+thing to the old classic contract is `config/notifybridge.example.json`
+(deploy with `config/deploy-config.ps1`).
 
 On every socket connect the app **replays** its live state into that
 sink - screen, active RING/VOIP, every active notification - so a
@@ -63,16 +55,40 @@ one-way; the app never reads a consumer line.
 
 ## Config
 
-Optional JSON at **`/data/local/tmp/notifybridge.json`** (adb-writable).
-Apply without touching the running service:
+Optional JSON, adb-writable, re-read on demand (see "Applying",
+below). **The whole policy is config and nothing else - a missing or
+broken config just means a passive bridge.** Only explicitly listed
+fields take effect; there are no built-in defaults to fall back to.
+
+The config is **drop-in**: `notifybridge.json` (optional) is merged
+with every `*.json` inside `/data/local/tmp/notifybridge.d/` (optional
+too), main file first, fragments in alphabetical order. Each app or
+helper keeps its own fragment and pushes/replaces it without touching
+anyone else's file.
+
+Merge rules: `sinks` and `watchedSettings` keep one entry per key
+(last occurrence wins), `rules` are concatenated with exact duplicates
+collapsed (last wins), `voipPkgs` is a union, `dialerPkg` = first
+non-empty value, `logAll` = any fragment with it enabled. A broken
+fragment is skipped and logged (`E notifybridge: fragment ... invalid,
+skipped`) - it never kills the rest. Example fragment:
+`config/notifybridge.d/fragment.example.json`.
+
+### Applying
 
 ```
 adb shell am broadcast -a com.bastet.notifybridge.RELOAD_CONFIG
 ```
 
 The broadcast pokes the live service directly and re-reads + rebuilds
-everything from the file. There is no polling - this broadcast (or the
-service (re)start) is the only way the config is re-read.
+everything from all files. There is no polling - this broadcast (or the
+service (re)start) is the only way the config is re-read. On some ROMs
+a chilled process misses the broadcast ("Broadcast completed" without
+"Delivering") - the reliable fallback is
+`adb shell am force-stop com.bastet.notifybridge` (the rebind applies
+the config). `config/deploy-config.ps1` does the whole dance:
+`.\deploy-config.ps1` for the main file, `-DropInName <name>` to push a
+fragment instead, `-RestartService` for the force-stop path.
 
 ```jsonc
 {
@@ -112,14 +128,34 @@ service (re)start) is the only way the config is re-read.
 }
 ```
 
-Most fields fall back to defaults per-field, so a config can be minimal
-(e.g. specify only `sinks`/`rules`, or just one key). A broken file never
-kills the bridge - each failed field drops back to its default.
+A config (main or fragment) is minimal by design: omit a key and it
+simply does nothing in the merge - so a fragment may contain only
+`watchedSettings`, or an app may only add `voipPkgs`. A totally broken
+main file puts the bridge into passive until fixed; a broken fragment is
+skipped on its own.
 
 Rule fields:
   `event` (`notify`|`ring`|`voip`|`screen`|`pulse`|`*`),
   `action` (`posted`|`removed`|`on`|`off`, or omit/`*` for any), `pkg`
   (exact, `prefix*` glob, or `*`), `to` (sink key), `line` (template).
+  A rule without `to`/`line` is dropped at parse.
+
+Watched settings: additional device-side toggles forwarded as 0/1 bus
+events. Each entry lists a `table` (`system`|`global`|`secure`), a
+`name`, the `event` type it maps to (optional, `pulse`), and `defaultOn`
+(optional, `false`) - what to forward if the setting is unset
+(on = 1, off = 0):
+
+```jsonc
+"watchedSettings": [
+  { "table": "system", "name": "notification_light_pulse",
+    "event": "pulse", "defaultOn": true }
+]
+```
+
+Rules matching a `setting` filter (`"setting": "notification_light_pulse"`)
+react to that setting only; the example above feeds the `pulse` event
+family regardless of rule filters.
 
 **Extending without code:** prune the rules to forward only what you
 need; point `to` at your own sink; switch a `line` to your own format;
@@ -183,7 +219,7 @@ Self-test from the shell (posts a test notification through the bridge):
 ## Files
 
 - `NotificationBridgeService.kt` - observer front, call classifiers, replay, config reload on broadcast
-- `BridgeConfig.kt` - config parse + defaults
+- `BridgeConfig.kt` - config parse, drop-in fragment merge, watched settings
 - `EventRouter.kt` - `BridgeEvent` + rule matching + `$vars` render + `logAll` mirror
 - `Sinks.kt` - socket / logcat sinks, per-sink reconnect loops
 - `ReloadReceiver.kt` - RELOAD_CONFIG broadcast entry (live-instance poke)

@@ -1,0 +1,38 @@
+{
+  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Unknown/extra keys are ignored.",
+  "dialerPkg": "com.google.android.dialer",
+  "voipPkgs": [
+    "org.telegram.messenger",
+    "com.whatsapp",
+    "com.viber.voip",
+    "org.thoughtcrime.securesms",
+    "com.snapchat",
+    "com.google.android.apps.tachyon"
+  ],
+  "sinks": [
+    { "type": "socket", "name": "notify_bus" },
+    { "type": "logcat", "name": "log" }
+  ],
+  "rules": [
+    { "event": "notify", "action": "posted",  "pkg": "*", "to": "notify_bus", "line": "ENQ $pkg $id" },
+    { "event": "notify", "action": "removed", "pkg": "*", "to": "notify_bus", "line": "CAN $pkg $id" },
+    { "event": "ring",   "action": "on",      "pkg": "*", "to": "notify_bus", "line": "RING_ON $incoming" },
+    { "event": "ring",   "action": "off",     "pkg": "*", "to": "notify_bus", "line": "RING_OFF" },
+    { "event": "voip",   "action": "on",      "pkg": "*", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+    { "event": "voip",   "action": "off",     "pkg": "*", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+    { "event": "screen", "action": "on",      "pkg": "*", "to": "notify_bus", "line": "SCREEN 1" },
+    { "event": "screen", "action": "off",     "pkg": "*", "to": "notify_bus", "line": "SCREEN 0" },
+    { "event": "pulse",  "action": "on",      "pkg": "*", "to": "notify_bus", "line": "PULSE 1" },
+    { "event": "pulse",  "action": "off",     "pkg": "*", "to": "notify_bus", "line": "PULSE 0" }
+  ],
+  "watchedSettings": [
+    {
+      "_comment": "Watch Settings.System.notification_light_pulse and forward changes as pulse 1/0. table: system|global|secure, event: any bus event type.",
+      "table": "system",
+      "name": "notification_light_pulse",
+      "event": "pulse",
+      "defaultOn": true
+    }
+  ],
+  "logAll": false
+}
