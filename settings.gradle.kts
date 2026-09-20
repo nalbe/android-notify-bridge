@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "noty-bridge"
+rootProject.name = "notify-bridge"
 include(":app")

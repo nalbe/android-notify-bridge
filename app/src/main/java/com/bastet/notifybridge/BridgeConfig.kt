@@ -1,4 +1,4 @@
-package com.bastet.notybridge
+package com.bastet.notifybridge
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -7,7 +7,7 @@ import java.io.File
 /**
  * Runtime bridge configuration.
  *
- * Optional JSON at [CONFIG_PATH] ("/data/local/tmp/notybridge.json",
+ * Optional JSON at [CONFIG_PATH] ("/data/local/tmp/notifybridge.json",
  * adb-writable) turns the bridge into a routing engine: each observed
  * event is matched against [Rule]s and forwarded to a [SinkCfg] as a
  * rendered text line. When the file is absent every field falls back to
@@ -20,7 +20,7 @@ data class BridgeConfig(
     val sinks: List<SinkCfg>,
     val rules: List<Rule>,
     /** Discovery mode. When true every normalized event on the bus is
-     *  mirrored to logcat (tag "notybridge", prefix "EVENT") before rule
+     *  mirrored to logcat (tag "notifybridge", prefix "EVENT") before rule
      *  matching - independent of sinks/rules. Watch it to learn exactly
      *  what to put into rules / voipPkgs / dialerPkg. */
     val logAll: Boolean
@@ -59,8 +59,8 @@ data class BridgeConfig(
     val socketCount: Int get() = sinks.count { it.isSocket }
 
     companion object {
-        const val CONFIG_PATH = "/data/local/tmp/notybridge.json"
-        const val SINK_DEFAULT = "noty_bus"
+        const val CONFIG_PATH = "/data/local/tmp/notifybridge.json"
+        const val SINK_DEFAULT = "notify_bus"
         const val SINK_LOG = "log"
 
         val DEFAULT_SINKS = listOf(
@@ -110,7 +110,7 @@ data class BridgeConfig(
                 if (f.exists()) parse(JSONObject(f.readText()))
                 else DEFAULT
             } catch (t: Throwable) {
-                android.util.Log.w("notybridge", "config parse failed, defaults: $t")
+                android.util.Log.w("notifybridge", "config parse failed, defaults: $t")
                 DEFAULT
             }
         }

@@ -1,4 +1,4 @@
-package com.bastet.notybridge
+package com.bastet.notifybridge
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -21,8 +21,8 @@ import java.util.Collections
 /**
  * NotificationListenerService - standalone headless notification bridge.
  *
- * Lives in its own APK (com.bastet.notybridge). The whole forwarding policy
- * lives in an optional device-side config (/data/local/tmp/notybridge.json):
+ * Lives in its own APK (com.bastet.notifybridge). The whole forwarding policy
+ * lives in an optional device-side config (/data/local/tmp/notifybridge.json):
  * which observed event goes where is a rule list, each rule rendering a
  * text line ("$pkg $id $key $incoming $on ...") into a configured sink
  * (abstract Unix socket, or logcat). No config file = built-in defaults
@@ -88,7 +88,7 @@ class NotificationBridgeService : NotificationListenerService() {
                 .setContentText("ENQ should hit the socket consumer and arm the bridge output")
                 .build()
         )
-        android.util.Log.i("notybridge", "self-test notification posted")
+        android.util.Log.i("notifybridge", "self-test notification posted")
     }
 
     override fun onCreate() {
@@ -110,7 +110,7 @@ class NotificationBridgeService : NotificationListenerService() {
             sinks = SinkRegistry(cfg, onSocketConnect).also { it.startAll() }
             config = cfg
         }
-        android.util.Log.i("notybridge",
+        android.util.Log.i("notifybridge",
             "config: ${cfg.rules.size} rules, ${cfg.sinks.size} sinks")
     }
 
@@ -140,7 +140,7 @@ class NotificationBridgeService : NotificationListenerService() {
                 @Suppress("UnspecifiedRegisterReceiverFlag")
                 registerReceiver(r, f)
             screenReceiver = r
-            android.util.Log.i("notybridge", "screen receiver on")
+            android.util.Log.i("notifybridge", "screen receiver on")
         }
     }
 
@@ -166,7 +166,7 @@ class NotificationBridgeService : NotificationListenerService() {
             }
             contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, o)
             pulseObserver = o
-            android.util.Log.i("notybridge", "pulse observer on Settings.System")
+            android.util.Log.i("notifybridge", "pulse observer on Settings.System")
         }
     }
 
@@ -179,7 +179,7 @@ class NotificationBridgeService : NotificationListenerService() {
         lastPulseSent = v
         emit(BridgeEvent("pulse", if (on) "on" else "off", on = on))
         if (!on && sinks?.anySocketConnected() == false)
-            android.util.Log.w("notybridge", "pulse=0 but no socket; disarm missed")
+            android.util.Log.w("notifybridge", "pulse=0 but no socket; disarm missed")
     }
 
     override fun onDestroy() {
@@ -248,7 +248,7 @@ class NotificationBridgeService : NotificationListenerService() {
     // ------------------------------------------------------------ events
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        android.util.Log.i("notybridge", "posted ${sbn.packageName} id=${sbn.id} key=${sbn.key}")
+        android.util.Log.i("notifybridge", "posted ${sbn.packageName} id=${sbn.id} key=${sbn.key}")
         if (isSimCallNotification(sbn)) {
             val incoming = simCallIsIncoming(sbn)
             ringNotifs.add(sbn.key)
@@ -265,7 +265,7 @@ class NotificationBridgeService : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        android.util.Log.i("notybridge", "removed ${sbn.packageName} id=${sbn.id}")
+        android.util.Log.i("notifybridge", "removed ${sbn.packageName} id=${sbn.id}")
         if (ringNotifs.remove(sbn.key)) {
             ringIncoming.remove(sbn.key)
             // Drop the rainbow only once the dialer has no live call left:
@@ -352,7 +352,7 @@ class NotificationBridgeService : NotificationListenerService() {
     }
 
     companion object {
-        private const val ACTION_POST_TEST = "com.bastet.notybridge.POST_TEST"
+        private const val ACTION_POST_TEST = "com.bastet.notifybridge.POST_TEST"
 
         /** Live service instance while the process is up; null when dead.
          *  ReloadReceiver pokes this directly - no startService (blocked

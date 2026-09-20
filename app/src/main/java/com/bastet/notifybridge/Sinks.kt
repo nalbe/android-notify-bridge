@@ -1,4 +1,4 @@
-package com.bastet.notybridge
+package com.bastet.notifybridge
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
@@ -19,7 +19,7 @@ class LogSink(override val name: String) : Sink {
     override fun start() {}
     override fun stop() {}
     override fun send(line: String) {
-        android.util.Log.i("notybridge", "sink[$name] $line")
+        android.util.Log.i("notifybridge", "sink[$name] $line")
     }
 }
 
@@ -88,14 +88,14 @@ class SocketSink(
             }
             sock = ls
             connected = true
-            android.util.Log.i("notybridge", "sink[$name]: connected to $sockName")
+            android.util.Log.i("notifybridge", "sink[$name]: connected to $sockName")
             try {
                 onConnect(this)
                 drain(ls)
             } finally {
                 connected = false
                 if (sock === ls) sock = null
-                android.util.Log.i("notybridge", "sink[$name]: closed, reconnecting")
+                android.util.Log.i("notifybridge", "sink[$name]: closed, reconnecting")
                 sleep(1000)
             }
         }

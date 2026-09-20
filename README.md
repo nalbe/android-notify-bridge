@@ -1,13 +1,13 @@
-# noty-bridge - standalone notification bridge
+# notify-bridge - standalone notification bridge
 
 A config-driven `NotificationListenerService` that turns Android
 notification events into text lines for any consumer over abstract Unix
-sockets. No UI, headless, single APK (`com.bastet.notybridge`).
+sockets. No UI, headless, single APK (`com.bastet.notifybridge`).
 
 Pure transport: the app only observes notifications and forwards them. It
 needs no root, never touches `su`, and knows nothing about whatever
 process listens on the socket - consumer wiring lives entirely in the
-device-side config (`/data/local/tmp/notybridge.json`).
+device-side config (`/data/local/tmp/notifybridge.json`).
 
 ## What it does
 
@@ -41,9 +41,9 @@ in a rule `line`: `$type $action $pkg $id $key $reason $incoming $on`.
 
 ### The default contract (no config file)
 
-No `notybridge.json` = built-in defaults that reproduce the classic
+No `notifybridge.json` = built-in defaults that reproduce the classic
 notification consumer contract 1:1 over the abstract socket
-`noty_bus`:
+`notify_bus`:
 
 ```
 ENQ <pkg> <id>          notification posted
@@ -63,11 +63,11 @@ one-way; the app never reads a consumer line.
 
 ## Config
 
-Optional JSON at **`/data/local/tmp/notybridge.json`** (adb-writable).
+Optional JSON at **`/data/local/tmp/notifybridge.json`** (adb-writable).
 Apply without touching the running service:
 
 ```
-adb shell am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
+adb shell am broadcast -a com.bastet.notifybridge.RELOAD_CONFIG
 ```
 
 The broadcast pokes the live service directly and re-reads + rebuilds
@@ -76,7 +76,7 @@ service (re)start) is the only way the config is re-read.
 
 ```jsonc
 {
-  // discovery mode: mirror every normalized event to logcat ("notybridge"
+  // discovery mode: mirror every normalized event to logcat ("notifybridge"
   // tag, "EVENT" prefix) BEFORE rule matching; independent of
   // rules/sinks. Turn it on, watch the bus, write your rules - see
   // "Discover what to route".
@@ -89,7 +89,7 @@ service (re)start) is the only way the config is re-read.
   // delivery endpoints: "socket" (abstract Unix) or "logcat".
   // name = sink key; for a socket it is also the abstract socket name.
   "sinks": [
-    { "type": "socket", "name": "noty_bus" },
+    { "type": "socket", "name": "notify_bus" },
     { "type": "logcat", "name": "log" }
   ],
 
@@ -98,16 +98,16 @@ service (re)start) is the only way the config is re-read.
   // matches BOTH polarities (e.g. an unfiltered "ring" rule would render
   // RING_ON for ring-off too).
   "rules": [
-    { "event": "notify", "action": "posted",  "pkg": "*", "to": "noty_bus", "line": "ENQ $pkg $id" },
-    { "event": "notify", "action": "removed", "pkg": "*", "to": "noty_bus", "line": "CAN $pkg $id" },
-    { "event": "ring",   "action": "on",      "pkg": "*", "to": "noty_bus", "line": "RING_ON $incoming" },
-    { "event": "ring",   "action": "off",     "pkg": "*", "to": "noty_bus", "line": "RING_OFF" },
-    { "event": "voip",   "action": "on",      "pkg": "*", "to": "noty_bus", "line": "VOIP_ON $pkg" },
-    { "event": "voip",   "action": "off",     "pkg": "*", "to": "noty_bus", "line": "VOIP_OFF $pkg" },
-    { "event": "screen", "action": "on",      "pkg": "*", "to": "noty_bus", "line": "SCREEN 1" },
-    { "event": "screen", "action": "off",     "pkg": "*", "to": "noty_bus", "line": "SCREEN 0" },
-    { "event": "pulse",  "action": "on",      "pkg": "*", "to": "noty_bus", "line": "PULSE 1" },
-    { "event": "pulse",  "action": "off",     "pkg": "*", "to": "noty_bus", "line": "PULSE 0" }
+    { "event": "notify", "action": "posted",  "pkg": "*", "to": "notify_bus", "line": "ENQ $pkg $id" },
+    { "event": "notify", "action": "removed", "pkg": "*", "to": "notify_bus", "line": "CAN $pkg $id" },
+    { "event": "ring",   "action": "on",      "pkg": "*", "to": "notify_bus", "line": "RING_ON $incoming" },
+    { "event": "ring",   "action": "off",     "pkg": "*", "to": "notify_bus", "line": "RING_OFF" },
+    { "event": "voip",   "action": "on",      "pkg": "*", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+    { "event": "voip",   "action": "off",     "pkg": "*", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+    { "event": "screen", "action": "on",      "pkg": "*", "to": "notify_bus", "line": "SCREEN 1" },
+    { "event": "screen", "action": "off",     "pkg": "*", "to": "notify_bus", "line": "SCREEN 0" },
+    { "event": "pulse",  "action": "on",      "pkg": "*", "to": "notify_bus", "line": "PULSE 1" },
+    { "event": "pulse",  "action": "off",     "pkg": "*", "to": "notify_bus", "line": "PULSE 0" }
   ]
 }
 ```
@@ -132,8 +132,8 @@ Not sure which events a package produces, or what a rule should render?
 Set `"logAll": true`, apply, and watch the raw bus:
 
 ```
-adb shell am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
-adb logcat -s notybridge:* | grep ' EVENT '
+adb shell am broadcast -a com.bastet.notifybridge.RELOAD_CONFIG
+adb logcat -s notifybridge:* | grep ' EVENT '
 ```
 
 Every event is mirrored to logcat **before** rule matching (rules are
@@ -164,7 +164,7 @@ EVENT screen off pkg= id=-1 key= reason=0 incoming=0 on=0
 ## Requirements
 
 - **Notification access** (Settings -> Special app access -> Notification
-  access -> NotyBridge) - required for the listener itself.
+  access -> NotifyBridge) - required for the listener itself.
 - **No root.** The app never calls `su`; it only reads its own config and
   writes to an abstract Unix socket. Whatever consumes the socket (and
   any supervision of that consumer) is the consumer's own business.
@@ -178,7 +178,7 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
 Self-test from the shell (posts a test notification through the bridge):
-`adb shell am startservice -n com.bastet.notybridge/.NotificationBridgeService -a com.bastet.notybridge.POST_TEST`
+`adb shell am startservice -n com.bastet.notifybridge/.NotificationBridgeService -a com.bastet.notifybridge.POST_TEST`
 
 ## Files
 

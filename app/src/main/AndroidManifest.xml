@@ -23,16 +23,16 @@
             </intent-filter>
         </service>
 
-        <!-- Reload trigger: am broadcast -a com.bastet.notybridge.RELOAD_CONFIG
-             (or any writer of /data/local/tmp/notybridge.json) applies
+        <!-- Reload trigger: am broadcast -a com.bastet.notifybridge.RELOAD_CONFIG
+             (or any writer of /data/local/tmp/notifybridge.json) applies
              the fresh rule set without touching the running service. This
              is the only way to re-read the config - there is no polling. -->
         <receiver
             android:name=".ReloadReceiver"
-            android:label="NotyBridge config reload"
+            android:label="NotifyBridge config reload"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.bastet.notybridge.RELOAD_CONFIG" />
+                <action android:name="com.bastet.notifybridge.RELOAD_CONFIG" />
             </intent-filter>
         </receiver>
     </application>
