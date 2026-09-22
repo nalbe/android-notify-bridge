@@ -261,10 +261,10 @@ class NotificationBridgeService : NotificationListenerService() {
         }
     }
 
-    /** Forward a toggle change as its mapped event (see WatchedSetting);
-     *  dropped while no sink is connected - the consumer re-reads the
-     *  toggle itself on its next arm, and the connect replay covers a
-     *  restart. */
+    /** Forward a toggle change as its mapped event (see WatchedSetting).
+     *  Dropped while no sink is connected - the connect replay sends the
+     *  current polarity to every freshly connected consumer, so nothing
+     *  is lost on restart. */
     private fun forwardSetting(table: String, name: String, cfg: BridgeConfig) {
         val ws = cfg.settings.firstOrNull { it.table == table && it.name == name }
             ?: return
@@ -327,6 +327,25 @@ class NotificationBridgeService : NotificationListenerService() {
             fwd(BridgeEvent(bc.event, if (screenOn) "on" else "off", on = screenOn,
                 source = BLog.SRC_BROADCAST))
         }
+        // Watched settings replay next: like screen, a freshly connected
+        // consumer must learn the CURRENT toggle state without reading the
+        // settings itself (that is why the daemon never touches Settings.*).
+        // Same polarity contract as forwardSetting(); the dedupe map is not
+        // touched so a real change later still gets forwarded.
+        for (ws in cfg.settings) {
+            val raw = when (ws.table) {
+                "system" -> Settings.System.getString(contentResolver, ws.name)
+                "global" -> Settings.Global.getString(contentResolver, ws.name)
+                "secure" -> Settings.Secure.getString(contentResolver, ws.name)
+                else -> null
+            }
+            val on = when {
+                raw == null -> ws.defaultOn
+                else -> runCatching { raw.toInt() != 0 }.getOrDefault(ws.defaultOn)
+            }
+            fwd(BridgeEvent(ws.event, if (on) "on" else "off", on = on,
+                setting = ws.name, source = BLog.SRC_SETTINGS))
+        }
         for (key in ringKeys) {
             val parts = key.split('|')
             fwd(BridgeEvent("ring", "on", pkg = parts.getOrElse(1) { "" },
@@ -337,9 +356,16 @@ class NotificationBridgeService : NotificationListenerService() {
             fwd(BridgeEvent("voip", "on", pkg = parts.getOrElse(1) { "" },
                 source = BLog.SRC_NOTIFY))
         }
+        val missedKeys = java.util.HashSet(missedNotifs)
+        for (key in missedKeys) {
+            val parts = key.split('|')
+            fwd(BridgeEvent("missed", "on", pkg = parts.getOrElse(1) { "" },
+                key = key, source = BLog.SRC_NOTIFY))
+        }
         for (sbn in actives) {
             val key = sbn.key
-            if (ringKeys.contains(key) || callKeys.contains(key)) continue
+            if (ringKeys.contains(key) || callKeys.contains(key) ||
+                missedKeys.contains(key)) continue
             fwd(BridgeEvent("notify", "posted", pkg = sbn.packageName, id = sbn.id, key = key,
                 source = BLog.SRC_NOTIFY))
         }
@@ -366,18 +392,27 @@ class NotificationBridgeService : NotificationListenerService() {
             val incoming = simCallIsIncoming(sbn)
             ringNotifs.add(sbn.key)
             ringIncoming[sbn.key] = incoming
-            // RING before the notify so a following dialer ping sees the
-            // ring active and skips missed-call verification.
+            // RING before anything else so a consumer about to paint from
+            // the raw ping keeps deferring to the live call.
             emit(BridgeEvent("ring", "on", pkg = sbn.packageName, id = sbn.id,
                 incoming = incoming, source = BLog.SRC_NOTIFY))
+        } else if (isMissedCallNotification(sbn)) {
+            missedNotifs.add(sbn.key)
+            emit(BridgeEvent("missed", "on", pkg = sbn.packageName, id = sbn.id,
+                key = sbn.key, source = BLog.SRC_NOTIFY))
         } else if (isCallNotification(sbn)) {
             callNotifs.add(sbn.key)
             // VOIP before the notify so the chat-color path never touches it.
             emit(BridgeEvent("voip", "on", pkg = sbn.packageName, id = sbn.id,
                 source = BLog.SRC_NOTIFY))
         }
-        emit(BridgeEvent("notify", "posted", pkg = sbn.packageName, id = sbn.id, key = sbn.key,
-            source = BLog.SRC_NOTIFY))
+        // The dialer is fully classified above (ring / missed); a raw
+        // notify ping for it would only confuse the consumer's pool, so
+        // NEVER forward one.
+        if (sbn.packageName != dialerPkg) {
+            emit(BridgeEvent("notify", "posted", pkg = sbn.packageName, id = sbn.id,
+                key = sbn.key, source = BLog.SRC_NOTIFY))
+        }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -393,14 +428,21 @@ class NotificationBridgeService : NotificationListenerService() {
             if (!still) emit(BridgeEvent("ring", "off", pkg = sbn.packageName,
                 source = BLog.SRC_NOTIFY))
         }
+        if (missedNotifs.remove(sbn.key)) {
+            val still = missedNotifs.any { it.split('|').getOrNull(1) == sbn.packageName }
+            if (!still) emit(BridgeEvent("missed", "off", pkg = sbn.packageName,
+                source = BLog.SRC_NOTIFY))
+        }
         if (callNotifs.remove(sbn.key)) {
             val still = callNotifs.any { it.split('|').getOrNull(1) == sbn.packageName }
             if (!still) emit(BridgeEvent("voip", "off", pkg = sbn.packageName,
                 source = BLog.SRC_NOTIFY))
         }
-        emit(BridgeEvent("notify", "removed",
-            pkg = sbn.packageName, id = sbn.id, key = sbn.key,
-            source = BLog.SRC_NOTIFY))
+        if (sbn.packageName != dialerPkg) {
+            emit(BridgeEvent("notify", "removed",
+                pkg = sbn.packageName, id = sbn.id, key = sbn.key,
+                source = BLog.SRC_NOTIFY))
+        }
     }
 
     // ------------------------------------------------------------ call detect
@@ -411,6 +453,11 @@ class NotificationBridgeService : NotificationListenerService() {
     /** Keys of notifications classified as a live/incoming telephony call. */
     private val ringNotifs = Collections.synchronizedSet(HashSet<String>())
     private val callNotifs = Collections.synchronizedSet(HashSet<String>())
+    /** Keys of the dialer's missed-call tombstones (channel "missed_calls").
+     *  Forwarded as missed.on / missed.off so the consumer needs no
+     *  call_log read - this IS the classification the consumer used to
+     *  re-derive by querying content://call_log. */
+    private val missedNotifs = Collections.synchronizedSet(HashSet<String>())
 
     /** incoming (1) per live dialer call key; survives removal where the
      *  notification is gone and cannot be re-inspected. */
@@ -419,13 +466,13 @@ class NotificationBridgeService : NotificationListenerService() {
     /**
      * A live telephony (SIM) call notification from the dialer. NOT a
      * missed-call row (channel "missed_calls", no CALL category, no
-     * answer/decline actions) - those pass through as a plain notify so
-     * the consumer's missed-call verification can claim them.
+     * answer/decline actions) - those are classified by
+     * [isMissedCallNotification] instead.
      */
     private fun isSimCallNotification(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName != dialerPkg) return false
+        if (isMissedCallNotification(sbn)) return false
         val n = sbn.notification
-        if ((n.channelId ?: "").lowercase().contains("missed")) return false
         if (n.category == Notification.CATEGORY_CALL) return true
         if ((n.channelId ?: "").lowercase().contains("call")) return true
         for (a in n.actions ?: emptyArray<Notification.Action>()) {
@@ -436,6 +483,15 @@ class NotificationBridgeService : NotificationListenerService() {
                 return true
         }
         return false
+    }
+
+    /** A dialer missed-call tombstone (channel "missed_calls"). This is
+     *  the ONLY dialer notification kind with no live call behind it, and
+     *  the channel id is the reliable marker (it already separated these
+     *  from live calls for the old consumer verification). */
+    private fun isMissedCallNotification(sbn: StatusBarNotification): Boolean {
+        if (sbn.packageName != dialerPkg) return false
+        return (sbn.notification.channelId ?: "").lowercase().contains("missed")
     }
 
     /** 1 = incoming (answer/decline available), 0 = outgoing/ongoing. */

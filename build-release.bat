@@ -10,17 +10,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "release" mkdir "release"
-
-if exist "app\build\outputs\apk\release\app-release.apk" (
-    copy /y "app\build\outputs\apk\release\app-release.apk" "release\notifybridge-release.apk" >nul
-)
-if exist "app\build\outputs\apk\release\notifybridge-release.apk" (
-    copy /y "app\build\outputs\apk\release\notifybridge-release.apk" "release\notifybridge-release.apk" >nul
-)
-
+rem The project-level release\ is a junction onto
+rem app\build\outputs\apk\release, so AGP's single write is already
+rem visible from the root - NEVER copy the APK again (a copy into the
+rem junction would write the file onto itself).
 if not exist "release\notifybridge-release.apk" (
-    echo APK not found in app\build\outputs\apk\release
+    echo APK not found under release (junction to app\build\outputs\apk\release)
     exit /b 1
 )
 
