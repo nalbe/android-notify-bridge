@@ -1,9 +1,14 @@
 # Gradle / Android build
 .gradle/
 build/
-release/
 local.properties
 *.apk
+
+# release/ holds ONLY the tracked distribution APK; anything else the
+# build tooling drops in there (output-metadata.json, extra copies) stays
+# ignored.
+release/*
+!release/notifybridge-release.apk
 
 # Kotlin
 .kotlin/
@@ -16,7 +21,3 @@ local.properties
 Thumbs.db
 Desktop.ini
 .DS_Store
-
-# Tracked distribution APK (fresh release build, committed intentionally)
-!release/
-!release/*.apk
