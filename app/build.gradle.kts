@@ -11,8 +11,8 @@ android {
         applicationId = "com.bastet.notifybridge"
         minSdk = 29
         targetSdk = 34
-        versionCode = 4
-        versionName = "4.0.0"
+        versionCode = 5
+        versionName = "5.0.0"
     }
 
     compileOptions {
@@ -36,6 +36,22 @@ android {
 
 base {
     archivesName.set("notifybridge")
+}
+
+// Stage the release APK into the project-level release/ folder (tracked,
+// see .gitignore) right after the release build finishes. Only the
+// primary release APK is staged, under its real name. The parallel
+// "-debugkey" artifact AGP emits for a debug-signed release is never
+// copied. Debug builds are NOT staged.
+afterEvaluate {
+    val copyTask = tasks.register<Copy>("stageReleaseApk") {
+        group = "build"
+        description = "Copy the release APK to the project release/ folder"
+        from(layout.buildDirectory.dir("outputs/apk/release"))
+        include("notifybridge-release.apk")
+        into(rootProject.layout.projectDirectory.dir("release"))
+    }
+    tasks.named("assembleRelease") { finalizedBy(copyTask) }
 }
 
 dependencies {

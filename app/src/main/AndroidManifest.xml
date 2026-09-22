@@ -25,7 +25,7 @@
 
         <!-- Reload trigger: am broadcast -a com.bastet.notifybridge.RELOAD_CONFIG
              (or any writer of /data/local/tmp/notifybridge.json) applies
-             the fresh rule set without touching the running service. This
+             the fresh route set without touching the running service. This
              is the only way to re-read the config - there is no polling. -->
         <receiver
             android:name=".ReloadReceiver"

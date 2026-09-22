@@ -6,20 +6,22 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 
-/** Delivery endpoint abstraction. */
+/** Delivery endpoint abstraction. [tag] is the logcat tag LogSink writes
+ *  under (BLog.*); socket sinks ignore it - the wire carries no tag. */
 interface Sink {
     val name: String
     fun start()
     fun stop()
-    fun send(line: String)
+    fun send(line: String, tag: String = BLog.CORE)
 }
 
-/** Debug mirror: anything routed here lands in logcat, no socket. */
+/** Debug mirror: anything routed here lands in logcat, no socket. Tagged
+ *  with the event's source tag so a log sink does not re-mix the streams. */
 class LogSink(override val name: String) : Sink {
     override fun start() {}
     override fun stop() {}
-    override fun send(line: String) {
-        android.util.Log.i("notifybridge", "sink[$name] $line")
+    override fun send(line: String, tag: String) {
+        android.util.Log.i(tag, "sink[$name] $line")
     }
 }
 
@@ -63,7 +65,7 @@ class SocketSink(
         sock = null
     }
 
-    override fun send(line: String) {
+    override fun send(line: String, tag: String) {
         val s = sock ?: return          // drop lines while reconnecting
         try {
             s.outputStream.write((line + "\n").toByteArray(StandardCharsets.UTF_8))
@@ -88,14 +90,14 @@ class SocketSink(
             }
             sock = ls
             connected = true
-            android.util.Log.i("notifybridge", "sink[$name]: connected to $sockName")
+            android.util.Log.i(BLog.CORE, "sink[$name]: connected to $sockName")
             try {
                 onConnect(this)
                 drain(ls)
             } finally {
                 connected = false
                 if (sock === ls) sock = null
-                android.util.Log.i("notifybridge", "sink[$name]: closed, reconnecting")
+                android.util.Log.i(BLog.CORE, "sink[$name]: closed, reconnecting")
                 sleep(1000)
             }
         }
@@ -126,7 +128,7 @@ class SocketSink(
     }
 }
 
-/** Holds every configured sink by rule target name. Rebuilt on reload. */
+/** Holds every configured sink by route target name. Rebuilt on reload. */
 class SinkRegistry(
     config: BridgeConfig,
     private val onSocketConnect: (Sink) -> Unit

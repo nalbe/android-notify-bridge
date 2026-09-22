@@ -1,15 +1,39 @@
 {
-  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. This fragment adds a voip app and a watched toggle without touching a main config.",
-  "voipPkgs": [
-    "org.example.myvoipapp"
-  ],
-  "watchedSettings": [
+  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. Fragments merge per key: broadcasts by action, settings by table/name, notifications.out by route, global routes collapse exact duplicates. This fragment adds a voip app, a watched toggle, a power broadcast entry (with its own out) and a global route - without touching a main config.",
+  "notifications": {
+    "calls": {
+      "voip": ["org.example.myvoipapp"]
+    },
+    "out": [
+      { "when": "ring.on", "to": "log", "line": "MYVOIP_RING $pkg $incoming" }
+    ]
+  },
+  "settings": [
     {
-      "_comment": "Example: forward Settings.System.some_toggle as event toggle 1/0.",
+      "_comment": "Example: forward Settings.System.some_toggle as event toggle on/off.",
       "table": "system",
       "name": "some_toggle",
       "event": "toggle",
-      "defaultOn": false
+      "defaultOn": false,
+      "out": [ { "when": "*", "to": "notify_bus", "line": "TOGGLE $on" } ]
     }
+  ],
+  "broadcasts": [
+    {
+      "_comment": "Example: power events as a charge on/off bus event with the entry's own routes.",
+      "action": "android.intent.action.POWER_CONNECTED",
+      "event": "charge",
+      "polarity": "on",
+      "out": [ { "when": "*", "to": "log", "line": "POWER_ON" } ]
+    },
+    {
+      "action": "android.intent.action.POWER_DISCONNECTED",
+      "event": "charge",
+      "polarity": "off",
+      "out": [ { "when": "*", "to": "log", "line": "POWER_OFF" } ]
+    }
+  ],
+  "routes": [
+    { "when": "battery.*", "to": "log", "line": "BATT $level $status" }
   ]
 }

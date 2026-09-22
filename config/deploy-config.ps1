@@ -57,4 +57,4 @@ if ($RestartService) {
     Write-Host "ROMs; rerun with -RestartService in that case."
 }
 
-Write-Host "Done. Check: adb logcat -d | findstr notifybridge"
+Write-Host "Done. Check: adb logcat -d | findstr nb-"

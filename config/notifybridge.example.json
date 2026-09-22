@@ -1,38 +1,95 @@
 {
-  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Unknown/extra keys are ignored.",
-  "dialerPkg": "com.google.android.dialer",
-  "voipPkgs": [
-    "org.telegram.messenger",
-    "com.whatsapp",
-    "com.viber.voip",
-    "org.thoughtcrime.securesms",
-    "com.snapchat",
-    "com.google.android.apps.tachyon"
-  ],
+  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Every event source is its own section (notifications/broadcasts/settings) that both listens and owns its out routes; the optional global 'routes' table matches across all sources. 'when' grammar: <type>.<action>, each side may be '*', a lone '*' = everything in scope. Unknown/extra keys are ignored; an unknown 'when' inside notifications.out is dropped with a warning.",
   "sinks": [
     { "type": "socket", "name": "notify_bus" },
     { "type": "logcat", "name": "log" }
   ],
-  "rules": [
-    { "event": "notify", "action": "posted",  "pkg": "*", "to": "notify_bus", "line": "ENQ $pkg $id" },
-    { "event": "notify", "action": "removed", "pkg": "*", "to": "notify_bus", "line": "CAN $pkg $id" },
-    { "event": "ring",   "action": "on",      "pkg": "*", "to": "notify_bus", "line": "RING_ON $incoming" },
-    { "event": "ring",   "action": "off",     "pkg": "*", "to": "notify_bus", "line": "RING_OFF" },
-    { "event": "voip",   "action": "on",      "pkg": "*", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-    { "event": "voip",   "action": "off",     "pkg": "*", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-    { "event": "screen", "action": "on",      "pkg": "*", "to": "notify_bus", "line": "SCREEN 1" },
-    { "event": "screen", "action": "off",     "pkg": "*", "to": "notify_bus", "line": "SCREEN 0" },
-    { "event": "pulse",  "action": "on",      "pkg": "*", "to": "notify_bus", "line": "PULSE 1" },
-    { "event": "pulse",  "action": "off",     "pkg": "*", "to": "notify_bus", "line": "PULSE 0" }
-  ],
-  "watchedSettings": [
+  "logAll": false,
+  "reload": true,
+
+  "notifications": {
+    "_comment": "NotificationListenerService source. enabled:false (or omitting the whole section) stops notification listening entirely. calls.dialer/voip feed SIM- and messenger-call classification (ring.*/voip.* events); a plain chat message is just notify.posted/removed.",
+    "enabled": true,
+    "calls": {
+      "dialer": "com.google.android.dialer",
+      "voip": [
+        "org.telegram.messenger",
+        "com.whatsapp",
+        "com.viber.voip",
+        "org.thoughtcrime.securesms",
+        "com.snapchat",
+        "com.google.android.apps.tachyon"
+      ]
+    },
+    "out": [
+      { "when": "notify.posted", "to": "notify_bus", "line": "ENQ $pkg $id" },
+      { "when": "notify.removed", "to": "notify_bus", "line": "CAN $pkg $id" },
+      { "when": "ring.on", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "when": "ring.off", "to": "notify_bus", "line": "RING_OFF" },
+      { "when": "voip.on", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "when": "voip.off", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "when": "*", "to": "log", "line": "$type $action $pkg $id" }
+    ]
+  },
+
+  "broadcasts": [
     {
-      "_comment": "Watch Settings.System.notification_light_pulse and forward changes as pulse 1/0. table: system|global|secure, event: any bus event type.",
+      "_comment": "Screen entries with polarity emit action on/off AND a real $on bit. snapshot:true re-emits the current screen state (PowerManager) into a freshly connected sink on replay.",
+      "action": "android.intent.action.SCREEN_OFF",
+      "event": "screen",
+      "polarity": "off",
+      "snapshot": true,
+      "out": [ { "when": "*", "to": "notify_bus", "line": "SCREEN $on" } ]
+    },
+    {
+      "action": "android.intent.action.SCREEN_ON",
+      "event": "screen",
+      "polarity": "on",
+      "snapshot": true,
+      "out": [ { "when": "*", "to": "notify_bus", "line": "SCREEN $on" } ]
+    },
+    {
+      "action": "android.intent.action.POWER_CONNECTED",
+      "event": "charge",
+      "polarity": "on",
+      "out": [ { "when": "*", "to": "notify_bus", "line": "CHG 1" } ]
+    },
+    {
+      "action": "android.intent.action.POWER_DISCONNECTED",
+      "event": "charge",
+      "polarity": "off",
+      "out": [ { "when": "*", "to": "notify_bus", "line": "CHG 0" } ]
+    },
+    {
+      "action": "android.intent.action.BATTERY_CHANGED",
+      "event": "battery",
+      "fields": { "level": "level", "status": "status", "plugged": "plugged", "scale": "scale" },
+      "out": [ { "when": "*", "to": "log", "line": "BATT $status $level plugged=$plugged" } ]
+    }
+  ],
+
+  "settings": [
+    {
+      "_comment": "Watch Settings.System.notification_light_pulse and forward changes as pulse on/off ($on = 1/0). table: system|global|secure, event: any bus event type, defaultOn: polarity when the key is missing/unreadable.",
       "table": "system",
       "name": "notification_light_pulse",
       "event": "pulse",
-      "defaultOn": true
+      "defaultOn": true,
+      "out": [ { "when": "*", "to": "notify_bus", "line": "PULSE $on" } ]
     }
   ],
-  "logAll": false
+
+  "routes": [
+    {
+      "_comment": "Global routes match across every source - this is the raw-tube / cross-source hook. A lone '*' mirrors everything; '*.on'/'*.off' catch every polarity event.",
+      "when": "*.on",
+      "to": "log",
+      "line": "ANYON 1"
+    },
+    {
+      "when": "*.off",
+      "to": "log",
+      "line": "ANYOFF 0"
+    }
+  ]
 }

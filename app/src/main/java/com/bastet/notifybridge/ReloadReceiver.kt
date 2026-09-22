@@ -7,7 +7,7 @@ import android.content.Intent
 
  * External reload entry point: `adb shell am broadcast
  * -a com.bastet.notifybridge.RELOAD_CONFIG` (or any app/script)
- * re-reads /data/local/tmp/notifybridge.json and rebuilds sinks/rules.
+ * re-reads /data/local/tmp/notifybridge.json and rebuilds sinks/routes.
  *
  * No startService here: background-start rules make a receiver's
  * startService() a silent no-op on Android 8+, and the config applies on
