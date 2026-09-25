@@ -3,12 +3,12 @@ package com.bastet.notifybridge
 /**
  * A single observed event on the bridge bus, fully normalized before it
  * ever reaches a route:
- *  type   = notify | ring | voip | screen | pulse | battery (or any
+ *  type   = notify | call | missed | screen | pulse | battery (or any
  *            event declared in a settings or broadcast config entry)
  *  action = posted | removed | on | off  (per type)
  *  pkg/id/key = the notification identity ("" / -1 / "" when n/a),
  *  reason     = onNotificationRemoved reason code,
- *  incoming   = freshly classified SIM-call direction,
+ *  incoming   = freshly classified call direction (call.on only),
  *  setting    = watched setting name that produced this event,
  *  on         = screen / pulse / broadcast polarity,
  *  fields     = broadcast-sourced extras (intent extra -> bus var name),

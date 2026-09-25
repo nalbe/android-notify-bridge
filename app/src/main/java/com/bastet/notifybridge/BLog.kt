@@ -7,7 +7,7 @@ package com.bastet.notifybridge
  * reload is never buried under notification spam.
  *
  *   nb-core      config apply, sinks/sockets, reload, fragment errors
- *   nb-notify    NLS posted/removed, ring/voip classification
+ *   nb-notify    NLS posted/removed, call/missed classification
  *   nb-bcast     registered system broadcasts (screen, charge, ...)
  *   nb-settings  watched Settings keys (pulse and friends)
  *

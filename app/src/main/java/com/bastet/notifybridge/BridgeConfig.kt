@@ -16,8 +16,9 @@ import java.io.File
  * it yields:
  *
  *  - [notifications]  NotificationListenerService: posted/removed plus
- *    SIM/voip call events (ring.* / voip.*). Optional, disabled when
- *    absent. Routing lives in `notifications.out`.
+ *    call classification (call.* / missed.*, markers on any package).
+ *    Optional, disabled when absent. Routing lives in
+ *    `notifications.out`.
  *  - [broadcasts]     System broadcasts (screen, plug/unplug, battery -
  *    any action the framework broadcasts), one entry per intent action.
  *    Each entry carries its own `out` routes.
@@ -29,13 +30,13 @@ import java.io.File
  *    are scope-confined, global routes are not.
  *
  * Every route uses one `when` grammar: "<type>.<action>" where either
- * side may be "*" (e.g. "notify.posted", "ring.*", "*.on", "*"). The
- * notification vocabulary is fixed (notify/ring/voip x
+ * side may be "*" (e.g. "notify.posted", "call.*", "*.on", "*"). The
+ * notification vocabulary is fixed (notify/call/missed x
  * posted/removed/on/off) and strictly validated, so a typo never
  * silently becomes a dead route.
  *
  * On a socket connect the bridge replays the live state (screen
- * polarity, active rings/voips, active notifications) through the same
+ * polarity, active calls, active notifications) through the same
  * routes into the freshly connected sink. Broadcast entries flagged
  * `snapshot: true` feed the screen-state replay.
  *
@@ -43,10 +44,9 @@ import java.io.File
  * ("/data/local/tmp/notifybridge.d/") is merged with the main file
  * (main first, fragments alphabetical). Merge keeps one entry per key:
  * sinks by name, broadcasts by action, settings by table/name,
- * notifications.out by route key, global routes collapse exact
- * duplicates (last wins); dialerPkg first non-empty, voipPkgs union,
- * logAll OR, reload AND. A broken fragment is skipped and logged, it
- * never kills the rest.
+*  notifications.out by route key, global routes collapse exact
+ *  duplicates (last wins); logAll OR, reload AND. A broken fragment is
+ *  skipped and logged, it never kills the rest.
  *
  * WITHOUT any config file the bridge is fully passive: no sinks, no
  * observers, no classification - nothing to do, nothing sent. There are
@@ -69,7 +69,7 @@ class BridgeConfig(
     /** Discovery mode. When true every normalized event on the bus is
      *  mirrored to logcat (tag = event source, prefix "EVENT") before
      *  route matching - independent of sinks/routes. Watch it to learn
-     *  exactly what to put into routes / out lists / voipPkgs. */
+     *  exactly what to put into routes / out lists / call pkg filters. */
     val logAll: Boolean,
     /** Whether the RELOAD_CONFIG broadcast is honored. Absent = true. */
     val reload: Boolean,
@@ -94,13 +94,14 @@ class BridgeConfig(
         val isSocket: Boolean get() = type == "socket"
     }
 
-    /** The notification source: [enabled] gate, call classification
-     *  package lists and the section-local [routes]. Route scope is
-     *  confined to notify/ring/voip events. */
+    /** The notification source: [enabled] gate and the section-local
+     *  [routes]. Call classification runs on any package - the markers
+     *  (category CALL / "call"-ish channel / answer-decline actions) are
+     *  built in; which package renders as a SIM call (RING_*) versus a
+     *  VOIP call is decided per route by its [Route.pkg]. Route scope is
+     *  confined to notify/call/missed events. */
     data class NotificationsCfg(
         val enabled: Boolean,
-        val dialerPkg: String,
-        val voipPkgs: Set<String>,
         val routes: List<Route>
     )
 
@@ -142,7 +143,10 @@ class BridgeConfig(
      *  "prefix*" glob or "*" (meaningful for notification events).
      *  [scope] confines the route to a fixed set of event types - set by
      *  the owning section, null for global routes. [to] = sink key,
-     *  [line] = template with $vars to forward. */
+     *  [line] = template with $vars to forward. Ever matching route fires
+     *  (routing is a fan-out): to split one event per package, list
+     *  specific-pkg routes and keep '*' routes for the same when off that
+     *  sink, or the package matches both and the sink gets two lines. */
     data class Route(
         val whenPat: String,
         val pkg: String,
@@ -200,18 +204,12 @@ class BridgeConfig(
         private const val SINK_LOG = "log"
         private val SETTING_TABLES = setOf("system", "global", "secure")
 
-        private val NOTIFY_TYPES = setOf("notify", "ring", "voip")
+        private val NOTIFY_TYPES = setOf("notify", "call", "missed")
         private val NOTIFY_ACTIONS = setOf("posted", "removed", "on", "off")
         private val NOTIFY_SCOPE = NOTIFY_TYPES
 
         /** Default line for a route without an explicit [line]. */
         const val DEFAULT_LINE = "\$type \$action \$pkg \$id"
-
-        private fun arr(o: JSONObject, key: String): List<String> {
-            if (!o.has(key)) return emptyList()
-            val a = o.optJSONArray(key) ?: return emptyList()
-            return (0 until a.length()).mapNotNull { a.optString(it).takeIf { v -> v.isNotEmpty() } }
-        }
 
         /** The config file plus every *.json fragment in [CONFIG_DIR]
          *  (alphabetical), the main file first. Missing pieces are simply
@@ -253,8 +251,7 @@ class BridgeConfig(
          *  sinks one per name (last wins); broadcasts one per action
          *  (last wins); settings one per table/name (last wins);
          *  notifications.out by route key (append); global routes exact
-         *  duplicates collapse (last wins); voipPkgs union; dialerPkg
-         *  first non-empty; logAll OR; reload AND. */
+         *  duplicates collapse (last wins); logAll OR; reload AND. */
         private fun merge(a: BridgeConfig, b: BridgeConfig): BridgeConfig =
             BridgeConfig(
                 sinks = keyedLast(a.sinks + b.sinks, { it.name }),
@@ -273,8 +270,6 @@ class BridgeConfig(
             if (b == null) return a
             return NotificationsCfg(
                 enabled = a.enabled && b.enabled,
-                dialerPkg = a.dialerPkg.ifEmpty { b.dialerPkg },
-                voipPkgs = a.voipPkgs + b.voipPkgs,
                 routes = distinctLast(a.routes + b.routes) { routeKey(it) }
             )
         }
@@ -335,11 +330,8 @@ class BridgeConfig(
         private fun parseNotifications(o: JSONObject?): NotificationsCfg? {
             if (o == null) return null
             val enabled = o.optBoolean("enabled", true)
-            val calls = o.optJSONObject("calls")
-            val dialer = calls?.optString("dialer") ?: ""
-            val voip = calls?.let { arr(it, "voip") }?.toSet() ?: emptySet()
             val routes = parseRoutes(o.optJSONArray("out"), NOTIFY_SCOPE)
-            return NotificationsCfg(enabled, dialer, voip, routes)
+            return NotificationsCfg(enabled, routes)
         }
 
         /** Parse one broadcast entry; requires a non-empty action and
@@ -409,7 +401,7 @@ class BridgeConfig(
             if (scope == NOTIFY_SCOPE && !validNotifyPattern(whenPat)) {
                 android.util.Log.w(BLog.CORE,
                     "notifications route dropped: unknown 'when' '$whenPat' " +
-                        "(use <type>.<action>: notify.*, ring.on, *.off, *)")
+                        "(use <type>.<action>: notify.*, call.on, *.off, *)")
                 return null
             }
             val line = o.optString("line").takeIf { it.isNotEmpty() } ?: DEFAULT_LINE

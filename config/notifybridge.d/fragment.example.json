@@ -1,11 +1,11 @@
 {
-  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. Fragments merge per key: broadcasts by action, settings by table/name, notifications.out by route, global routes collapse exact duplicates. This fragment adds a voip app, a watched toggle, a power broadcast entry (with its own out) and a global route - without touching a main config.",
+  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. Fragments merge per key: broadcasts by action, settings by table/name, notifications.out by route, global routes collapse exact duplicates. This fragment forwards one app's notifications by pkg (a selective notify route - no '*' fallback here means only that app's pings reach the sink), adds a watched toggle, a power broadcast entry (with its own out) and a global route - without touching a main config.",
   "notifications": {
-    "calls": {
-      "voip": ["org.example.myvoipapp"]
-    },
+    "_comment": "Selective forward: ONLY com.example.myapp notifications go to notify_bus as ENQ/CAN. Everything else has no matching notify route and stays off the bus. Call: render this app's calls as VOIP_* (marker classification on any package - no package list needed).",
     "out": [
-      { "when": "ring.on", "to": "log", "line": "MYVOIP_RING $pkg $incoming" }
+      { "when": "notify.posted", "pkg": "com.example.myapp", "to": "notify_bus", "line": "ENQ $pkg $id" },
+      { "when": "notify.removed", "pkg": "com.example.myapp", "to": "notify_bus", "line": "CAN $pkg $id" },
+      { "when": "call.on", "pkg": "*", "to": "log", "line": "MYVOIP_RING $pkg $incoming" }
     ]
   },
   "settings": [

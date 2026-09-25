@@ -19,10 +19,12 @@ A normalized event bus plus a routing engine:
    broadcasts, listed in the config), system Settings toggles (the
    "Notification light" LED switch and anything else you want as a 0/1
    event).
-2. Classify: SIM calls (dialer package) and messenger calls (VoIP package
-   list) are detected by built-in heuristics - a raw notification has no
-   "this is a call" marker, so pkg + channelId/category/action titles are
-   checked (details below). Both package lists are config.
+2. Classify: live calls (SIM telephony or messenger VoIP, any package)
+   by notification markers - category CALL, a "call"-ish channel id, or
+   answer/decline/reject/end-call actions (details below). A missed-call
+   tombstone (channel contains "missed") is classified as `missed`.
+   Which package renders as a SIM call is a route concern (`pkg` filter),
+   not a code concern.
 3. Route: every event is matched against the merged route list; each match
    renders a text line and sends it to the configured sink (abstract Unix
    socket or logcat). Routes live in their owning source section
@@ -36,13 +38,13 @@ Every event carries all normalized fields; irrelevant ones are empty/`-1`/`0`:
 | type    | action                 | populated fields              |
 |---------|------------------------|-------------------------------|
 | notify  | `posted` / `removed`   | `$pkg` `$id` `$key` (+ `$reason` on removed) |
-| ring    | `on` / `off`           | `$pkg` `$id` `$incoming` (on); `$pkg` (off) |
-| voip    | `on` / `off`           | `$pkg` `$id` (on); `$pkg` (off) |
+| call    | `on` / `off`           | `$pkg` `$id` `$incoming` (on); `$pkg` (off) |
+| missed  | `on` / `off`           | `$pkg` `$id` (on); `$pkg` (off) |
 | screen  | `on` / `off`           | `$on` (on/off broadcasts and snapshot replay) |
 | pulse / any settings event | `on` / `off` | `$setting` `$on`      |
 | charge / any broadcast event | polarity, `eventAction`, or raw intent action | `$on` (when `polarity`) + any mapped broadcast extra |
 
-`$incoming` renders `1`/`0` (freshly classified SIM-call direction),
+`$incoming` renders `1`/`0` (freshly classified call direction),
 `$on` as `1`/`0`, `$reason` as the removal reason code. Available `$vars`
 in a route `line`: `$type $action $pkg $id $key $reason $incoming
 $setting $on`, plus any broadcast extra mapped through
@@ -58,13 +60,13 @@ side may be `*`, so the grammar is one rule with no hidden aliases:
 | when        | matches                                            |
 |-------------|----------------------------------------------------|
 | `notify.posted` | only posted notifications                       |
-| `ring.*`    | any ring event (on + off)                          |
+| `call.*`    | any call event (on + off)                          |
 | `*.on`      | every `on` event from the route's scope            |
 | `*`         | everything the route's scope sees                  |
 
 Section routes (`notifications.out`, an entry's `out`) are **scope-
 confined**: a `*` inside `notifications.out` never escapes the
-notify/ring/voip vocabulary, a `*` in a broadcast entry's `out` only
+notify/call/missed vocabulary, a `*` in a broadcast entry's `out` only
 sees that entry's own event. Global `routes` are **unconfined** - a
 lone `when: "*"` there is the raw tube: one entry mirroring everything
 the bus emits into one sink.
@@ -82,7 +84,7 @@ whole policy - the closest thing to the old classic contract is
 
 On every socket connect the app **replays** its live state into that
 sink through that sink's own routes - screen polarity (from
-`snapshot: true` broadcast entries), active RING/VOIP, every active
+`snapshot: true` broadcast entries), active CALL/MISSED, every active
 notification - so a consumer restart mid-call re-arms cleanly. The
 socket is strictly one-way: there is no command channel and no consumer
 line is ever acted on (the sink only reads the stream to detect EOF for
@@ -101,9 +103,11 @@ source** - and each section both says what it listens to and how to
 route what it yields:
 
 - `notifications` (optional) - the NotificationListenerService source:
-  `enabled`, call classification package lists (`calls.dialer` /
-  `calls.voip`) and `out` routes for the fixed notify/ring/voip events.
-  Omitting the section or `enabled: false` stops notification listening.
+  `enabled` and `out` routes for the fixed notify/call/missed events.
+  Live-call classification runs on any package by notification markers
+  (see "Call classification"); a call from a package with no matching
+  `call.on` route simply forwards nothing. Omitting the section or
+  `enabled: false` stops notification listening.
 - `broadcasts` (list) - system broadcasts, one entry per intent action.
   Each entry carries its own `out` routes plus `polarity` / `snapshot` /
   `fields` (below).
@@ -123,8 +127,7 @@ anyone else's file.
 Merge rules: `sinks` one per name, `broadcasts` one per action,
 `settings` one per table/name (all last occurrence wins);
 `notifications.out` and global `routes` append with exact duplicates
-collapsed; `notifications.calls.voip` union; `notifications.calls.dialer`
-first non-empty; `logAll` any fragment with it enabled wins; `reload`
+collapsed; `logAll` any fragment with it enabled wins; `reload`
 merges as AND (any fragment setting it off keeps it off). A broken
 fragment is skipped and logged
 (`E nb-core: fragment ... invalid, skipped: ...`) - it never kills the
@@ -164,21 +167,20 @@ fragment instead, `-RestartService` for the force-stop path.
   // ---- source: notifications -------------------------------------
   "notifications": {
     "enabled": true,
-    // call classification package lists (SIM + messenger)
-    "calls": {
-      "dialer": "com.google.android.dialer",
-      "voip": ["org.telegram.messenger", "com.whatsapp"]
-    },
-    // section-local routes, scope confined to notify/ring/voip.
-    // 'when' is strictly validated: notify|ring|voip x
-    // posted|removed|on|off (either side may be '*').
+    // section-local routes, scope confined to notify/call/missed.
+    // 'when' is strictly validated: notify|call|missed x
+    // posted|removed|on|off (either side may be '*'). Routing is a
+    // fan-out: EVERY matching route fires, so split calls per package
+    // with specific-pkg routes and keep a '*' call route off that sink.
     "out": [
       { "when": "notify.posted", "to": "notify_bus", "line": "ENQ $pkg $id" },
       { "when": "notify.removed", "to": "notify_bus", "line": "CAN $pkg $id" },
-      { "when": "ring.on",  "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "ring.off", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "voip.on",  "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "voip.off", "to": "notify_bus", "line": "VOIP_OFF $pkg" }
+      { "when": "call.on", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "when": "call.off", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "when": "call.on", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "when": "call.off", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "when": "missed.on", "to": "notify_bus", "line": "MISSED_ON $id" },
+      { "when": "missed.off", "to": "notify_bus", "line": "MISSED_OFF $id" }
     ]
   },
 
@@ -226,9 +228,9 @@ fragment instead, `-RestartService` for the force-stop path.
 
 A config (main or fragment) is minimal by design: omit a key and it
 simply does nothing in the merge - so a fragment may contain only
-`settings`, or an app may only add `notifications.calls.voip` plus a
-route. A totally broken main file puts the bridge into passive until
-fixed; a broken fragment is skipped on its own.
+`settings`, or an app may only add a `call.on`/`call.off` route pair
+for its own package plus a route. A totally broken main file puts the
+bridge into passive until fixed; a broken fragment is skipped on its own.
 
 Route fields:
   `when` (`<type>.<action>`, either side `*`, or `*`), `pkg` (exact,
@@ -288,15 +290,15 @@ config file):
 
 ```
 EVENT notify posted pkg=org.telegram.messenger id=123 key=0|... reason=0 incoming=0 setting= on=0
-EVENT ring on pkg=com.google.android.dialer id=7 key=... reason=0 incoming=1 setting= on=0
+EVENT call on pkg=com.google.android.dialer id=7 key=... reason=0 incoming=1 setting= on=0
 EVENT screen off pkg= id=-1 key= reason=0 incoming=0 setting= on=0
 EVENT pulse on pkg= id=-1 key= reason=0 incoming=0 setting=notification_light_pulse on=1
 EVENT battery android.intent.action.BATTERY_CHANGED pkg= id=-1 key= reason=0 incoming=0 setting= on=0 fields=status=2,level=55,plugged=1
 ```
 
-`incoming=1` tells you the call classification fired (ring/voip);
-`$pkg`, `$action`, `$on` are exactly what you copy into `calls.voip`,
-`calls.dialer`, `when` patterns and `line` templates; `setting=` names
+`incoming=1` tells you the call classification fired (call on);
+`$pkg`, `$action`, `$on` are exactly what you copy into route `pkg`
+filters, `when` patterns and `line` templates; `setting=` names
 the watched Settings key; `on=1` confirms a real polarity bit from
 `polarity`/`snapshot` entries. For broadcast-sourced events a `fields=`
 chunk lists the mapped extras - those names are your route line `$vars`.
@@ -309,7 +311,7 @@ bridge source instead of one shared stream:
 | tag          | what lands there                                       |
 |--------------|--------------------------------------------------------|
 | `nb-core`    | config apply, sinks/sockets, reload, fragment errors   |
-| `nb-notify`  | NLS posted/removed, ring/voip classification           |
+| `nb-notify`  | NLS posted/removed, call/missed classification           |
 | `nb-bcast`   | registered system broadcasts (screen, charge, ...)     |
 | `nb-settings`| watched Settings keys (pulse and friends)              |
 
@@ -324,16 +326,28 @@ adb logcat -s nb-notify:* nb-core:D     # notifications + config plumbing
 
 ## Call classification
 
-- **ring (SIM calls)** - package == `notifications.calls.dialer` and NOT
-  a missed-call row (channel id containing `missed`). Fired when the
-  notification has `CATEGORY_CALL`, a `call`-ish channel id, or
-  answer/decline/reject/end-call/hang-up actions. `$incoming` = 1 when
-  an answer/decline/reject action or an `incoming`/`ring` channel is
-  present.
-- **voip (messenger calls)** - package in `notifications.calls.voip`
-  with `CATEGORY_CALL`, a `call`-ish channel id, or
-  answer/decline/reject/end-call/hang-up actions. A plain chat message
-  matches none of those and takes the normal notify path.
+Runs on **any package**, no package lists in config. The markers are
+built in:
+
+- **call (live calls)** - NOT a missed-call row (channel id containing
+  `missed`, which ALSO contains `call` - the tombstone check wins).
+  Fired when the notification has `CATEGORY_CALL`, a `call`-ish channel
+  id, or answer/decline/reject/end-call/hang-up actions. `$incoming` =
+  1 when an answer/decline/reject action or an `incoming`/`ring`
+  channel is present.
+- **missed** - a missed-call tombstone: channel id contains `missed`.
+- **notify** - everything else (a plain chat message matches no call
+  marker and takes the normal path).
+
+SIM-versus-VOIP rendering is **not** classified - it is routed. One
+`call.on` event per live call hits every matching route (fan-out), so
+the config lists one `call.on`/`call.off` pair per package: telephony
+dialers render as `RING_*`, messenger apps as `VOIP_*`; a live call
+from a package with no `call.*` route simply forwards nothing. A
+package inside a live call sends no `notify.posted` ping - `call.on`
+already carries the whole picture, so the consumer pool never sees the
+same call twice; `notify.*` resumes the moment the last call key for
+that package goes away, no package lists involved.
 
 ## Requirements
 
