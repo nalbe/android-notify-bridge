@@ -52,12 +52,15 @@ data class BridgeEvent(
 }
 
 /**
- * Routing engine: fans every BridgeEvent out to every matching route,
- * each rendered into its sink's text line. Routes are scope-confined by
- * their owning section (see [BridgeConfig.Route.scope]); global routes
- * (top-level `routes[]`) match across every source. A route is inert
- * until config places it - no route means the event is simply not
- * forwarded.
+ * Routing engine: forwards every BridgeEvent out to the matching
+ * routes. Per sink the MOST specific matching route wins
+ * ([BridgeConfig.Route.specificity] - how many of action/category/pkg
+ * are pinned), so a specific-pkg call route suppresses the raw "*"
+ * route for the same call on that sink; on a tie every equally specific
+ * route fires. Routes are scope-confined by their owning section (see
+ * [BridgeConfig.Route.scope]); global routes (top-level `routes[]`)
+ * match across every source. A route is inert until config places it -
+ * no route means the event is simply not forwarded.
  */
 object EventRouter {
 
@@ -80,10 +83,11 @@ object EventRouter {
     fun emit(e: BridgeEvent, config: BridgeConfig, sinks: SinkRegistry) =
         emitInto(e, config, sinks, null)
 
-    /** Route [e] through every matching route. With [onlySink] set only
-     *  routes targeting that sink are rendered - used by the connect
+    /** Route [e] through the matching routes. With [onlySink] set only
+     *  routes targeting that sink are considered - used by the connect
      *  replay so a freshly connected consumer gets its own state without
-     *  re-stamping other connected sinks. */
+     *  re-stamping other connected sinks. Per sink the most specific
+     *  route wins; equal specificity = every tied route fires. */
     fun emitInto(
         e: BridgeEvent,
         config: BridgeConfig,
@@ -91,11 +95,19 @@ object EventRouter {
         onlySink: String?
     ) {
         mirror(e, config)
+        val bySink = HashMap<String, ArrayList<BridgeConfig.Route>>()
         for (r in config.routes) {
             if (!r.matches(e)) continue
             if (onlySink != null && r.to != onlySink) continue
-            val sink = sinks[r.to] ?: continue
-            sink.send(e.render(r.line), BLog.tagOf(e))
+            bySink.getOrPut(r.to) { ArrayList() }.add(r)
+        }
+        for ((sinkName, routes) in bySink) {
+            val best = routes.maxOf { it.specificity }
+            val sink = sinks[sinkName] ?: continue
+            for (r in routes) {
+                if (r.specificity != best) continue
+                sink.send(e.render(r.line), BLog.tagOf(e))
+            }
         }
     }
 }

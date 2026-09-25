@@ -15,7 +15,7 @@
     ]
   },
   "broadcasts": {
-    "_comment": "Example: power events as a charge on/off bus event, and a second SCREEN_OFF output (the same intent action fanning out over two routes - the merged main config keeps its own SCREEN_OFF route too).",
+    "_comment": "Example: power events as a charge on/off bus event, and a second SCREEN_OFF output on a different sink (same intent action, equal specificity - both this and the main config's SCREEN_OFF route fire).",
     "out": [
       { "action": "android.intent.action.POWER_CONNECTED", "event": "charge", "polarity": "on", "to": "log", "line": "POWER_ON" },
       { "action": "android.intent.action.POWER_DISCONNECTED", "event": "charge", "polarity": "off", "to": "log", "line": "POWER_OFF" },

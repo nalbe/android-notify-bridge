@@ -1,5 +1,5 @@
 {
-  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Every event source is its own section (notifications/broadcasts/settings) with a flat out list; the optional global 'routes' table matches across all sources. Route grammar: 'action' = posted/removed/on/off ('*' any), 'category' = the routing split (exact value / '*' any / '' only none - for notifications the normalized category 'call' / 'missed_call' / the app's own / '' when none), 'pkg' filters by package (exact or 'prefix*', default '*'). Broadcast/settings routes are self-contained: their trigger fields (action/event/polarity/snapshot/fields and table/name/event/defaultOn) pick the event, to/line route it; one trigger may fan out over several routes to different sinks. Every matching route fires (routing is a fan-out): to route one event to different lines per package, list specific-pkg routes and do NOT mix a '*' route for the same action on the same sink - the package hits both and the sink gets two lines. The old 'when' key and the per-entry 'out' nesting are gone (dropped with a warning). Unknown/extra keys are ignored; an unknown 'action' inside notifications.out is dropped with a warning.",
+  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Every event source is its own section (notifications/broadcasts/settings) with a flat out list; the optional global 'routes' table matches across all sources. Route grammar: 'action' = posted/removed/on/off ('*' any), 'category' = the routing split (exact value / '*' any / '' only none - for notifications the normalized category 'call' / 'missed_call' / the app's own / '' when none), 'pkg' filters by package (exact or 'prefix*', default '*'). Broadcast/settings routes are self-contained: their trigger fields (action/event/polarity/snapshot/fields and table/name/event/defaultOn) pick the event, to/line route it; one trigger may fan out over several routes to different sinks. Per sink the MOST specific matching route wins - a specific pkg/category/action route suppresses a '*' route for the same event on that sink; on equal specificity every tied route fires (so a specific-pkg call route beats a raw '*' route and no duplicate line is sent). The old 'when' key and the per-entry 'out' nesting are gone (dropped with a warning). Unknown/extra keys are ignored; an unknown 'action' inside notifications.out is dropped with a warning.",
   "sinks": [
     { "type": "socket", "name": "notify_bus" },
     { "type": "logcat", "name": "log" }
@@ -57,7 +57,7 @@
 
   "broadcasts": {
     "enabled": true,
-    "_comment": "System broadcasts: one section, flat out list. Each route is self-contained - its trigger (action/event/eventAction/polarity/snapshot/fields) picks the event, to/line route it. One intent action may fan out over any number of routes to different sinks (repeat the action+event). A route without 'action', 'event' or 'to' is dropped with a warning. Registering the receiver delivers sticky states (BATTERY_CHANGED) by itself. The old nesting (entry with its own out) is gone.",
+    "_comment": "System broadcasts: one section, flat out list. Each route is self-contained - its trigger (action/event/eventAction/polarity/snapshot/fields) picks the event, to/line route it. One intent action may fan out over any number of routes to different sinks (repeat the action+event); per sink the most specific route wins, equal specificity - all fire. A route without 'action', 'event' or 'to' is dropped with a warning. Registering the receiver delivers sticky states (BATTERY_CHANGED) by itself. The old nesting (entry with its own out) is gone.",
     "out": [
       {
         "action": "android.intent.action.SCREEN_OFF",
@@ -101,7 +101,7 @@
 
   "settings": {
     "enabled": true,
-    "_comment": "Watch Settings keys and forward changes through inline routes. One flat out list; route fields: table (system|global|secure), name (watched key), event (bus event type, the route category), defaultOn (polarity when the key is missing/unreadable), to, line. One name may fan out over several routes.",
+    "_comment": "Watch Settings keys and forward changes through inline routes. One flat out list; route fields: table (system|global|secure), name (watched key), event (bus event type, the route category), defaultOn (polarity when the key is missing/unreadable), to, line. One name may fan out over several routes to different sinks.",
     "out": [
       {
         "table": "system",

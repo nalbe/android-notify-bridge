@@ -68,6 +68,14 @@ broadcast events the route event, for settings the watched key:
 | `on` / `screen`       | screen on/off polarity events                  |
 | `*` / `*`             | anything the route's scope sees                |
 
+Per **sink** the most specific matching route wins: specificity counts
+how many of `action`/`category`/`pkg` a route pins down (`*` = 0, an
+exact package or `prefix*` glob = 1). So a `category:"call"`+`pkg:...`
+route suppresses the raw `category:"*"` route for the same call on the
+same sink (specific beats wildcard - live calls and the raw pool CAN
+share one sink, no duplicates). On a tie (two equally specific routes
+to one sink, e.g. different `line`s) every tied route fires.
+
 Section routes are **scope-confined**: a `*` inside
 `notifications.out` never escapes the notify event, and every
 broadcast/settings route is confined to its own event type (the `event`
@@ -182,10 +190,10 @@ fragment instead, `-RestartService` for the force-stop path.
   // every notification surfaces as ONE notify event; classification
   // picks the route category: 'call' / 'missed_call' / the app's own /
   // '' when none. SIM vs messenger is decided here per route: dialers
-  // render as RING_*, messenger apps as VOIP_*. Routing is a fan-out:
-  // EVERY matching route fires, so split calls per package with
-  // specific-pkg routes and keep a '*' category route off that sink
-  // unless you want the raw pool to see the same event twice.
+  // render as RING_*, messenger apps as VOIP_*. Per sink the most
+  // specific route wins: a package's "call" route suppresses the raw
+  // '*' ENQ/CAN on the same sink, so live calls and the raw pool can
+  // share one sink without duplicates.
   "notifications": {
     "enabled": true,
     "out": [
@@ -278,8 +286,9 @@ nor the raw intent action, `snapshot: true` = feed the connect replay
 intent extras (BatteryManager.EXTRA_* etc.) to `$vars`. The bus action
 is `polarity` when set, else `eventAction`, else the raw intent action
 ($on stays 0 for raw variadic extras). One intent action may appear on
-any number of routes (fan-out) - every matching route emits its own
-event. Sticky broadcasts (`BATTERY_CHANGED`) replay their current state
+any number of routes to different sinks; per sink the most specific
+route wins (equal specificity - every tied route fires). Sticky
+broadcasts (`BATTERY_CHANGED`) replay their current state
 the moment the config is applied. Protected system broadcasts need no
 permission for a dynamic receiver; only the listed actions are ever
 registered.
@@ -375,13 +384,14 @@ built in and select the event's **category** - `call` (live) or
   when none (a plain chat message matches no call marker and takes the
   normal path with its real category).
 
-SIM-versus-VOIP rendering is **not** classified - it is routed. Every
-event hits every matching route (fan-out), so the config lists one
+SIM-versus-VOIP rendering is **not** classified - it is routed. Per
+sink the most specific route wins, so the config lists one
 `posted`/`removed` pair per package with `category:"call"`: telephony
 dialers render as `RING_*`, messenger apps as `VOIP_*`; a live call
-from a package with no call route still hits any `category:"*"` raw
-route (drop that pair, or narrow it, to keep a live call off the raw
-pool). Live-call / missed-call bookkeeping only masks the raw pool if
+from a package with no call route still hits the raw `category:"*"`
+route (specific call routes win over it on the same sink - drop that
+pair, or narrow it, to keep a live call off the raw pool). Live-call /
+missed-call bookkeeping only masks the raw pool if
 your config asks for it - `category:"*"` notify routes see every event,
 decisions included.
 

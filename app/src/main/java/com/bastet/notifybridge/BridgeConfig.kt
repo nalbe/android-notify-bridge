@@ -172,10 +172,13 @@ class BridgeConfig(
      *  (meaningful for notification events). [scope] confines the route
      *  to a fixed set of event types - set by the owning section, null
      *  for global routes. [to] = sink key, [line] = template with $vars
-     *  to forward. Every matching route fires (routing is a fan-out): to
-     *  split one event per package, list specific-pkg routes and keep a
-     *  '*' route for the same action off that sink, or the package
-     *  matches both and the sink gets two lines. */
+     *  to forward. Routing per sink is winner-take-most: only the MOST
+     *  specific matching routes fire ([Route.specificity] - how many of
+     *  action/category/pkg are pinned), so a specific-pkg call route
+     *  suppresses the raw "*" route for the same call on that sink; on a
+     *  tie (e.g. two equally specific routes to one sink) every tied
+     *  route fires. Split one event per package by giving each package a
+     *  more specific route than the "*" fallback. */
     data class Route(
         val action: String,
         val category: String,
@@ -184,6 +187,16 @@ class BridgeConfig(
         val line: String,
         val scope: Set<String>?
     ) {
+        /** How many of action/category/pkg are pinned down ("*" counts as
+         *  0, an exact package or a "prefix*" glob counts as pinned).
+         *  Per sink the MOST specific matching route wins; on a tie every
+         *  tied route fires. So a specific-pkg call route suppresses the
+         *  raw '*' route for the same call on that sink. */
+        val specificity: Int
+            get() = (if (action != "*") 1 else 0) +
+                (if (category != "*") 1 else 0) +
+                (if (pkg != "*") 1 else 0)
+
         fun matches(e: BridgeEvent): Boolean {
             if (scope != null && e.type !in scope) return false
             if (action != "*" && action != e.action) return false
