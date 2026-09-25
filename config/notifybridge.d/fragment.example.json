@@ -1,39 +1,28 @@
 {
-  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. Fragments merge per key: broadcasts by action, settings by table/name, notifications.out by route, global routes collapse exact duplicates. This fragment forwards one app's notifications by pkg (a selective notify route - no '*' fallback here means only that app's pings reach the sink), adds a watched toggle, a power broadcast entry (with its own out) and a global route - without touching a main config.",
+  "_comment": "Example drop-in fragment. Deploy with: .\\config\\deploy-config.ps1 -DropInName myapp -ConfigPath config\\notifybridge.d\\fragment.example.json. Only listed sections are merged; anything can be omitted. Fragments merge per key: broadcasts/settings/notifications routes collapse exact duplicates, global routes collapse exact duplicates. This fragment forwards one app's notifications by pkg (a selective notify route - no '*' fallback here means only that app's pings reach the sink), adds a watched toggle, a power broadcast route, a second output for the same SCREEN intent, and a global route - without touching a main config. Route grammar: 'action' = posted/removed/on/off ('*'), 'category' = routing split (for notifications 'call'/'missed_call'/real/''); broadcast/settings routes carry their trigger inline.",
   "notifications": {
     "_comment": "Selective forward: ONLY com.example.myapp notifications go to notify_bus as ENQ/CAN. Everything else has no matching notify route and stays off the bus. Call: render this app's calls as VOIP_* (marker classification on any package - no package list needed).",
     "out": [
-      { "when": "notify.posted", "pkg": "com.example.myapp", "to": "notify_bus", "line": "ENQ $pkg $id" },
-      { "when": "notify.removed", "pkg": "com.example.myapp", "to": "notify_bus", "line": "CAN $pkg $id" },
-      { "when": "call.on", "pkg": "*", "to": "log", "line": "MYVOIP_RING $pkg $incoming" }
+      { "action": "posted", "category": "*", "pkg": "com.example.myapp", "to": "notify_bus", "line": "ENQ $pkg $id" },
+      { "action": "removed", "category": "*", "pkg": "com.example.myapp", "to": "notify_bus", "line": "CAN $pkg $id" },
+      { "action": "posted", "category": "call", "pkg": "*", "to": "log", "line": "MYVOIP_RING $pkg $incoming" }
     ]
   },
-  "settings": [
-    {
-      "_comment": "Example: forward Settings.System.some_toggle as event toggle on/off.",
-      "table": "system",
-      "name": "some_toggle",
-      "event": "toggle",
-      "defaultOn": false,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "TOGGLE $on" } ]
-    }
-  ],
-  "broadcasts": [
-    {
-      "_comment": "Example: power events as a charge on/off bus event with the entry's own routes.",
-      "action": "android.intent.action.POWER_CONNECTED",
-      "event": "charge",
-      "polarity": "on",
-      "out": [ { "when": "*", "to": "log", "line": "POWER_ON" } ]
-    },
-    {
-      "action": "android.intent.action.POWER_DISCONNECTED",
-      "event": "charge",
-      "polarity": "off",
-      "out": [ { "when": "*", "to": "log", "line": "POWER_OFF" } ]
-    }
-  ],
+  "settings": {
+    "_comment": "Example: forward Settings.System.some_toggle as event toggle on/off.",
+    "out": [
+      { "table": "system", "name": "some_toggle", "event": "toggle", "defaultOn": false, "to": "notify_bus", "line": "TOGGLE $on" }
+    ]
+  },
+  "broadcasts": {
+    "_comment": "Example: power events as a charge on/off bus event, and a second SCREEN_OFF output (the same intent action fanning out over two routes - the merged main config keeps its own SCREEN_OFF route too).",
+    "out": [
+      { "action": "android.intent.action.POWER_CONNECTED", "event": "charge", "polarity": "on", "to": "log", "line": "POWER_ON" },
+      { "action": "android.intent.action.POWER_DISCONNECTED", "event": "charge", "polarity": "off", "to": "log", "line": "POWER_OFF" },
+      { "action": "android.intent.action.SCREEN_OFF", "event": "screen", "polarity": "off", "to": "log", "line": "SCREEN_LOGGED $on" }
+    ]
+  },
   "routes": [
-    { "when": "battery.*", "to": "log", "line": "BATT $level $status" }
+    { "action": "*", "category": "battery", "to": "log", "line": "BATT $level $status" }
   ]
 }

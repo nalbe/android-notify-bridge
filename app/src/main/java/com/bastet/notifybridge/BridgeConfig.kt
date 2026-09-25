@@ -24,16 +24,18 @@ import java.io.File
  *    Each entry carries its own `out` routes.
  *  - [settings]       Settings toggles observed via ContentObservers on
  *    system/global/secure, one entry per key, each with its own `out`.
- *  - [routes]         Optional global routing table. Its `when` patterns
- *    are matched across every source (this is the "raw tube": a route
- *    with `when: "*"` mirrors everything into one sink). Section routes
+ *  - [routes]         Optional global routing table, matched across every
+ *    source (this is the "raw tube": a route with `action: "*"` and
+ *    `category: "*"` mirrors everything into one sink). Section routes
  *    are scope-confined, global routes are not.
  *
- * Every route uses one `when` grammar: "<type>.<action>" where either
- * side may be "*" (e.g. "notify.posted", "call.*", "*.on", "*"). The
- * notification vocabulary is fixed (notify/call/missed x
- * posted/removed/on/off) and strictly validated, so a typo never
- * silently becomes a dead route.
+ * Every route splits on two axes: `action` is the event action
+ * ("posted"/"removed"/"on"/"off", "*" = any) and `category` is the
+ * routing axis - for notifications the normalized category ("call" /
+ * "missed_call" / the real one / "" = no category, "*" = any), for
+ * broadcast events the entry event, for settings the watched key. A typo
+ * in a notification `action` is dropped with a warning before it can
+ * become a silently dead route.
  *
  * On a socket connect the bridge replays the live state (screen
  * polarity, active calls, active notifications) through the same
@@ -76,15 +78,15 @@ class BridgeConfig(
     /** Notification source. Null or disabled = the NLS is not listened
      *  to (no classification, no bookkeeping). */
     val notifications: NotificationsCfg?,
-    /** Settings watched for user-visible toggle changes. Each maps a
-     *  Settings table entry to an event type on the bus and carries the
-     *  routes that forward its on/off changes. */
-    val settings: List<SettingCfg>,
-    /** System broadcasts observed via one dynamic receiver. Each entry
-     *  registers one intent action, emits a bus event and carries the
-     *  routes that forward it. Covers screen, plug/unplug, battery level
-     *  - anything the framework broadcasts, never a hardcoded action. */
-    val broadcasts: List<BroadcastCfg>,
+    /** Settings source: the [SettingsCfg.enabled] gate and the flat
+     *  [SettingsCfg.entries] inline routes that forward on/off changes.
+     *  Null = no observers, settings disabled. */
+    val settings: SettingsCfg?,
+    /** Broadcasts source: the [BroadcastsCfg.enabled] gate and the flat
+     *  [BroadcastsCfg.entries] inline routes. One dynamic receiver is
+     *  registered for every distinct intent action the entries listen
+     *  for. Null = no receiver, broadcasts disabled. */
+    val broadcasts: BroadcastsCfg?,
     /** Global routing table, matched across every source. */
     private val globalRoutes: List<Route>
 ) {
@@ -95,39 +97,51 @@ class BridgeConfig(
     }
 
     /** The notification source: [enabled] gate and the section-local
-     *  [routes]. Call classification runs on any package - the markers
-     *  (category CALL / "call"-ish channel / answer-decline actions) are
-     *  built in; which package renders as a SIM call (RING_*) versus a
-     *  VOIP call is decided per route by its [Route.pkg]. Route scope is
-     *  confined to notify/call/missed events. */
+     *  [routes]. Every notification (call included) surfaces as one
+     *  `notify` type; live-call / missed-call classification runs on any
+     *  package by built-in markers and shows through the route's
+     *  [Route.category] - "call" / "missed_call" / the app's own one.
+     *  SIM-versus-VOIP rendering is decided per route by [Route.pkg].
+     *  Route scope is confined to the notify event. */
     data class NotificationsCfg(
         val enabled: Boolean,
         val routes: List<Route>
     )
 
-    /** One observed Settings entry. [table] = system|global|secure,
-     *  [name] = settings key, [event] = bus event type to emit (default
-     *  "pulse"), [defaultOn] = polarity when the key is missing -
-     *  unreadable (the classic LED toggle reads as on). A change emits
-     *  BridgeEvent(event, "on"/"off", on = polarity, setting = name)
-     *  through routes scoped to [event]. */
+    /** One watched Settings key as an inline route. [table] =
+     *  system|global|secure, [name] = settings key, [event] = bus event
+     *  type (default "pulse"), [defaultOn] = polarity when the key is
+     *  missing/unreadable (the classic LED toggle reads as on). A change
+     *  emits BridgeEvent(event, "on"/"off", on = polarity, setting =
+     *  name) through the registered route ([to]/[line]). */
     data class SettingCfg(
         val table: String,
         val name: String,
         val event: String,
         val defaultOn: Boolean,
-        val routes: List<Route>
+        val to: String,
+        val line: String
     )
 
-    /** One observed system broadcast. [action] = intent action to listen
-     *  for, [event] = bus event type emitted. The bus action is
-     *  [polarity] ("on"/"off" - also sets e.on) when set, else
-     *  [eventAction], else the raw intent action; a raw action carries
-     *  on = false. [snapshot] = true means: on socket connect re-emit
+    /** The settings source: [enabled] gate and the flat [entries] list.
+     *  Merge collapses exact duplicates; one table/name may appear on
+     *  any number of entries (fan-out to different sinks). */
+    data class SettingsCfg(
+        val enabled: Boolean,
+        val entries: List<SettingCfg>
+    )
+
+    /** One observed system broadcast as an inline route. [action] = the
+     *  intent action to listen for, [event] = bus event type (the route
+     *  category). The bus action is [polarity] ("on"/"off" - also sets
+     *  e.on) when set, else [eventAction], else the raw intent action
+     *  (on = false). [snapshot] = true means: on socket connect re-emit
      *  the current screen state (PowerManager) as this event. [fields]
      *  maps intent extras (BatteryManager.EXTRA_* etc.) to $vars; a
-     *  field key identical to a built-in var is skipped. Routes are
-     *  scoped to [event]. */
+     *  field key identical to a built-in var is skipped. The emitted
+     *  event goes to [to] rendered with [line]. One intent action may
+     *  appear on any number of entries (fan-out) - every matching entry
+     *  emits its own event. */
     data class BroadcastCfg(
         val action: String,
         val event: String,
@@ -135,20 +149,36 @@ class BridgeConfig(
         val polarity: Boolean?,
         val snapshot: Boolean,
         val fields: Map<String, String>,
-        val routes: List<Route>
+        val to: String,
+        val line: String
     )
 
-    /** One forwarding route. [when] matches "<type>.<action>", each side
-     *  "*" wildcard; sole "*" matches everything. [pkg] = exact package,
-     *  "prefix*" glob or "*" (meaningful for notification events).
-     *  [scope] confines the route to a fixed set of event types - set by
-     *  the owning section, null for global routes. [to] = sink key,
-     *  [line] = template with $vars to forward. Ever matching route fires
-     *  (routing is a fan-out): to split one event per package, list
-     *  specific-pkg routes and keep '*' routes for the same when off that
-     *  sink, or the package matches both and the sink gets two lines. */
+    /** The broadcasts source: [enabled] gate and the flat [entries]
+     *  list. One dynamic receiver handles every distinct action among
+     *  the entries. Merge collapses exact duplicates. */
+    data class BroadcastsCfg(
+        val enabled: Boolean,
+        val entries: List<BroadcastCfg>
+    )
+
+    /** One forwarding route. [action] matches the event action
+     *  ("posted"/"removed"/"on"/"off", "*" = any). [category] splits the
+     *  same action by its routing axis - for notifications a normalized
+     *  category: "call" (live call), "missed_call" (tombstone), the app's
+     *  own Notification category, or "" (the app set none); "*" = any,
+     *  "" on the route = only notifications carrying no category. For
+     *  broadcast events [category] is the entry event, for settings the
+     *  watched key. [pkg] = exact package, "prefix*" glob or "*"
+     *  (meaningful for notification events). [scope] confines the route
+     *  to a fixed set of event types - set by the owning section, null
+     *  for global routes. [to] = sink key, [line] = template with $vars
+     *  to forward. Every matching route fires (routing is a fan-out): to
+     *  split one event per package, list specific-pkg routes and keep a
+     *  '*' route for the same action off that sink, or the package
+     *  matches both and the sink gets two lines. */
     data class Route(
-        val whenPat: String,
+        val action: String,
+        val category: String,
         val pkg: String,
         val to: String,
         val line: String,
@@ -156,23 +186,14 @@ class BridgeConfig(
     ) {
         fun matches(e: BridgeEvent): Boolean {
             if (scope != null && e.type !in scope) return false
+            if (action != "*" && action != e.action) return false
+            if (category != "*" && category != e.category) return false
             if (pkg != "*") {
                 if (pkg.endsWith("*")) {
                     if (!e.pkg.startsWith(pkg.dropLast(1))) return false
                 } else if (pkg != e.pkg) return false
             }
-            return whenMatches(whenPat, e)
-        }
-
-        companion object {
-            fun whenMatches(pat: String, e: BridgeEvent): Boolean {
-                if (pat == "*") return true
-                val p = pat.split(".", limit = 2)
-                if (p.size != 2) return pat == "${e.type}.${e.action}"
-                if (p[0] != "*" && p[0] != e.type) return false
-                if (p[1] != "*" && p[1] != e.action) return false
-                return true
-            }
+            return true
         }
     }
 
@@ -181,21 +202,26 @@ class BridgeConfig(
      *  without a single route. */
     val isActive: Boolean
         get() = (notifications?.enabled == true) ||
-            broadcasts.isNotEmpty() || settings.isNotEmpty()
+            (broadcasts?.enabled == true) || (settings?.enabled == true)
 
     val socketCount: Int get() = sinks.count { it.isSocket }
 
     /** Every route the bus should try, sections first then global,
-     *  exact duplicates collapsed. Flattened from the RESOLVED sections,
-     *  so a fragment that replaces a broadcast/setting entry drops the
-     *  replaced entry's routes with it. */
+     *  exact duplicates collapsed. Broadcast/settings entries resolve to
+     *  one route each (filtered to enabled sections only). Flattened
+     *  from the RESOLVED sections, so a fragment that replaces a
+     *  broadcast/setting route drops the replaced route with it. */
     val routes: List<Route> by lazy {
         val out = ArrayList<Route>()
         notifications?.routes?.let { out.addAll(it) }
-        broadcasts.forEach { out.addAll(it.routes) }
-        settings.forEach { out.addAll(it.routes) }
+        broadcasts?.takeIf { it.enabled }?.entries?.forEach {
+            out.add(broadcastRoute(it))
+        }
+        settings?.takeIf { it.enabled }?.entries?.forEach {
+            out.add(settingRoute(it))
+        }
         out.addAll(globalRoutes)
-        distinctLast(out) { "${it.whenPat}|${it.pkg}|${it.to}|${it.line}" }
+        distinctLast(out) { routeKey(it) }
     }
 
     companion object {
@@ -204,7 +230,7 @@ class BridgeConfig(
         private const val SINK_LOG = "log"
         private val SETTING_TABLES = setOf("system", "global", "secure")
 
-        private val NOTIFY_TYPES = setOf("notify", "call", "missed")
+        private val NOTIFY_TYPES = setOf("notify")
         private val NOTIFY_ACTIONS = setOf("posted", "removed", "on", "off")
         private val NOTIFY_SCOPE = NOTIFY_TYPES
 
@@ -252,14 +278,17 @@ class BridgeConfig(
          *  (last wins); settings one per table/name (last wins);
          *  notifications.out by route key (append); global routes exact
          *  duplicates collapse (last wins); logAll OR; reload AND. */
+        /** Drop-in merge: sinks, broadcasts and settings last-wins per
+         *  entry, notifications and per-entry route duplicates collapse
+         *  (last wins); logAll OR; reload AND. */
         private fun merge(a: BridgeConfig, b: BridgeConfig): BridgeConfig =
             BridgeConfig(
                 sinks = keyedLast(a.sinks + b.sinks, { it.name }),
                 logAll = a.logAll || b.logAll,
                 reload = a.reload && b.reload,
                 notifications = mergeNotifications(a.notifications, b.notifications),
-                settings = keyedLast(a.settings + b.settings) { "${it.table}/${it.name}" },
-                broadcasts = keyedLast(a.broadcasts + b.broadcasts) { it.action },
+                settings = mergeSettings(a.settings, b.settings),
+                broadcasts = mergeBroadcasts(a.broadcasts, b.broadcasts),
                 globalRoutes = distinctLast(a.globalRoutes + b.globalRoutes) { routeKey(it) }
             )
 
@@ -274,8 +303,46 @@ class BridgeConfig(
             )
         }
 
+        private fun mergeBroadcasts(
+            a: BroadcastsCfg?, b: BroadcastsCfg?
+        ): BroadcastsCfg? {
+            if (a == null) return b
+            if (b == null) return a
+            return BroadcastsCfg(
+                enabled = a.enabled && b.enabled,
+                entries = distinctLast(a.entries + b.entries) { broadcastKey(it) }
+            )
+        }
+
+        private fun mergeSettings(
+            a: SettingsCfg?, b: SettingsCfg?
+        ): SettingsCfg? {
+            if (a == null) return b
+            if (b == null) return a
+            return SettingsCfg(
+                enabled = a.enabled && b.enabled,
+                entries = distinctLast(a.entries + b.entries) { settingKey(it) }
+            )
+        }
+
         private fun routeKey(r: Route): String =
-            "${r.whenPat}|${r.pkg}|${r.to}|${r.line}"
+            "${r.action}|${r.category}|${r.pkg}|${r.to}|${r.line}"
+
+        private fun broadcastKey(b: BroadcastCfg): String =
+            "${b.action}|${b.event}|${b.to}|${b.line}"
+
+        private fun settingKey(s: SettingCfg): String =
+            "${s.table}|${s.name}|${s.to}|${s.line}"
+
+        /** Resolve a broadcast inline route to its bus route:
+         *  category = event, scope = the event type only. */
+        private fun broadcastRoute(b: BroadcastCfg): Route =
+            Route("*", b.event, "*", b.to, b.line, setOf(b.event))
+
+        /** Resolve a settings inline route to its bus route:
+         *  category = the watched key, scope = the event type only. */
+        private fun settingRoute(s: SettingCfg): Route =
+            Route("*", s.name, "*", s.to, s.line, setOf(s.event))
 
         /** Keep one entry per key, the LAST occurrence winning. */
         private fun <T> keyedLast(list: List<T>, key: (T) -> String): List<T> {
@@ -302,16 +369,8 @@ class BridgeConfig(
                 }
             } ?: emptyList()
             val notifications = parseNotifications(o.optJSONObject("notifications"))
-            val broadcasts = o.optJSONArray("broadcasts")?.let { a ->
-                (0 until a.length()).mapNotNull { i ->
-                    parseBroadcast(a.optJSONObject(i) ?: return@mapNotNull null)
-                }
-            } ?: emptyList()
-            val settings = o.optJSONArray("settings")?.let { a ->
-                (0 until a.length()).mapNotNull { i ->
-                    parseSetting(a.optJSONObject(i) ?: return@mapNotNull null)
-                }
-            } ?: emptyList()
+            val broadcasts = parseBroadcasts(o.optJSONObject("broadcasts"))
+            val settings = parseSettings(o.optJSONObject("settings"))
             val globalRoutes = o.optJSONArray("routes")?.let { a ->
                 parseRoutes(a, scope = null)
             } ?: emptyList()
@@ -334,27 +393,55 @@ class BridgeConfig(
             return NotificationsCfg(enabled, routes)
         }
 
-        /** Parse one broadcast entry; requires a non-empty action and
-         *  event. Extras are mapped by their intent key (e.g. "level",
-         *  "status", "plugged", "scale") to bus variable names; reserved
-         *  built-in names are skipped. Routes are scoped to the entry's
-         *  event. */
-        private fun parseBroadcast(v: Any?): BroadcastCfg? {
-            if (v !is JSONObject) return null
-            val action = v.optString("action").takeIf { it.isNotEmpty() } ?: return null
-            val event = v.optString("event").takeIf { it.isNotEmpty() } ?: return null
-            val eventAction = v.optString("eventAction").takeIf { it.isNotEmpty() }
+        /** The broadcasts source is one section like notifications: an
+         *  [enabled] gate (absent = true) and a flat [out] list where
+         *  every route is self-contained (trigger + output inline). The
+         *  old per-entry "out" nesting is gone - routes are parsed
+         *  directly, so one intent action may fan out over any number of
+         *  routes to different sinks. */
+        private fun parseBroadcasts(o: JSONObject?): BroadcastsCfg? {
+            if (o == null) return null
+            val enabled = o.optBoolean("enabled", true)
+            val entries = o.optJSONArray("out")?.let { a ->
+                (0 until a.length()).mapNotNull { i ->
+                    val v = a.optJSONObject(i) ?: return@mapNotNull null
+                    parseBroadcast(v)
+                }
+            } ?: emptyList()
+            return BroadcastsCfg(enabled, entries)
+        }
+
+        /** One broadcast route: an intent [action], a bus [event] (the
+         *  category), a sink [to]. The retired "when" key and the old
+         *  nested "out" are dropped with a warning; unknown trigger keys
+         *  are ignored. */
+        private fun parseBroadcast(o: JSONObject): BroadcastCfg? {
+            val action = o.optString("action").takeIf { it.isNotEmpty() }
+            val event = o.optString("event").takeIf { it.isNotEmpty() }
+            val to = o.optString("to").takeIf { it.isNotEmpty() }
+            if (o.has("when") || o.has("out")) {
+                android.util.Log.w(BLog.CORE,
+                    "broadcast route dropped: 'when'/'out' nesting is gone - " +
+                        "one inline route per entry")
+                return null
+            }
+            if (action == null || event == null || to == null) {
+                android.util.Log.w(BLog.CORE,
+                    "broadcast route dropped: 'action', 'event' and 'to' are required")
+                return null
+            }
+            val eventAction = o.optString("eventAction").takeIf { it.isNotEmpty() }
             val polarity = when {
-                v.has("polarity") -> when (v.optString("polarity")) {
+                o.has("polarity") -> when (o.optString("polarity")) {
                     "on" -> true
                     "off" -> false
                     else -> null
                 }
                 else -> null
             }
-            val snapshot = v.optBoolean("snapshot", false)
+            val snapshot = o.optBoolean("snapshot", false)
             val fields = LinkedHashMap<String, String>()
-            val fo = v.optJSONObject("fields")
+            val fo = o.optJSONObject("fields")
             if (fo != null) {
                 val it = fo.keys()
                 while (it.hasNext()) {
@@ -364,24 +451,48 @@ class BridgeConfig(
                     if (vv != null) fields[k] = vv
                 }
             }
-            val routes = parseRoutes(v.optJSONArray("out"), setOf(event))
-            return BroadcastCfg(
-                action, event, eventAction, polarity, snapshot, fields, routes
-            )
+            val line = o.optString("line").takeIf { it.isNotEmpty() } ?: DEFAULT_LINE
+            return BroadcastCfg(action, event, eventAction, polarity, snapshot, fields, to, line)
         }
 
-        /** Parse one settings entry; rejects unknown tables, empty names
-         *  and empty events. [table] optional (system), [event] optional
-         *  (pulse), [defaultOn] optional (false). */
-        private fun parseSetting(v: Any?): SettingCfg? {
-            if (v !is JSONObject) return null
-            val table = v.optString("table", "system")
+        /** The settings source is organized the same way: [enabled] gate
+         *  (absent = true) and a flat [out] list of inline routes. */
+        private fun parseSettings(o: JSONObject?): SettingsCfg? {
+            if (o == null) return null
+            val enabled = o.optBoolean("enabled", true)
+            val entries = o.optJSONArray("out")?.let { a ->
+                (0 until a.length()).mapNotNull { i ->
+                    val v = a.optJSONObject(i) ?: return@mapNotNull null
+                    parseSetting(v)
+                }
+            } ?: emptyList()
+            return SettingsCfg(enabled, entries)
+        }
+
+        /** One settings route: [table] optional (system), [event] optional
+         *  (pulse), [defaultOn] optional (false), sink [to] required. The
+         *  retired "when" key and the old nested "out" are dropped with a
+         *  warning. */
+        private fun parseSetting(o: JSONObject): SettingCfg? {
+            val table = o.optString("table", "system")
             if (table !in SETTING_TABLES) return null
-            val name = v.optString("name").takeIf { it.isNotEmpty() } ?: return null
-            val event = v.optString("event", "pulse").takeIf { it.isNotEmpty() } ?: return null
-            val defaultOn = if (v.has("defaultOn")) v.optBoolean("defaultOn", false) else false
-            val routes = parseRoutes(v.optJSONArray("out"), setOf(event))
-            return SettingCfg(table, name, event, defaultOn, routes)
+            val name = o.optString("name").takeIf { it.isNotEmpty() }
+            val event = o.optString("event", "pulse").takeIf { it.isNotEmpty() } ?: "pulse"
+            val to = o.optString("to").takeIf { it.isNotEmpty() }
+            if (o.has("when") || o.has("out")) {
+                android.util.Log.w(BLog.CORE,
+                    "settings route dropped: 'when'/'out' nesting is gone - " +
+                        "one inline route per entry")
+                return null
+            }
+            if (name == null || to == null) {
+                android.util.Log.w(BLog.CORE,
+                    "settings route dropped: 'name' and 'to' are required")
+                return null
+            }
+            val defaultOn = if (o.has("defaultOn")) o.optBoolean("defaultOn", false) else false
+            val line = o.optString("line").takeIf { it.isNotEmpty() } ?: DEFAULT_LINE
+            return SettingCfg(table, name, event, defaultOn, to, line)
         }
 
         private fun parseRoutes(a: org.json.JSONArray?, scope: Set<String>?): List<Route> {
@@ -392,35 +503,35 @@ class BridgeConfig(
             }
         }
 
-        /** One route: requires a sink [to]; [when]/[pkg]/[line] optional.
-         *  Notification routes are scope-checked against the fixed
-         *  vocabulary so a typo never becomes a silently dead route. */
+        /** One route: requires a sink [to]; [action]/[category]/[pkg]/[line]
+         *  optional (defaults "*"/"*"/"*"/DEFAULT_LINE). The old "when"
+         *  key is gone - it is dropped with a warning so a stale config
+         *  never silently comes alive. Notification routes are
+         *  action-checked so a typo never becomes a silently dead route. */
         private fun parseRoute(o: JSONObject, scope: Set<String>?): Route? {
             val to = o.optString("to").takeIf { it.isNotEmpty() } ?: return null
-            val whenPat = o.optString("when", "*")
-            if (scope == NOTIFY_SCOPE && !validNotifyPattern(whenPat)) {
+            if (o.has("when")) {
                 android.util.Log.w(BLog.CORE,
-                    "notifications route dropped: unknown 'when' '$whenPat' " +
-                        "(use <type>.<action>: notify.*, call.on, *.off, *)")
+                    "route dropped: 'when' is gone - use 'action' + 'category'")
+                return null
+            }
+            val action = o.optString("action", "*")
+            if (scope == NOTIFY_SCOPE && action != "*" && action !in NOTIFY_ACTIONS) {
+                android.util.Log.w(BLog.CORE,
+                    "notifications route dropped: unknown 'action' '$action' " +
+                        "(use posted|removed|on|off or *)")
                 return null
             }
             val line = o.optString("line").takeIf { it.isNotEmpty() } ?: DEFAULT_LINE
-            val pkg = if (o.has("pkg")) o.optString("pkg") else "*"
-            return Route(whenPat, pkg, to, line, scope)
-        }
-
-        private fun validNotifyPattern(p: String): Boolean {
-            if (p == "*") return true
-            val parts = p.split(".", limit = 2)
-            if (parts.size != 2) return false
-            return (parts[0] in NOTIFY_TYPES || parts[0] == "*") &&
-                (parts[1] in NOTIFY_ACTIONS || parts[1] == "*")
+            val category = o.optString("category", "*")
+            val pkg = o.optString("pkg", "*")
+            return Route(action, category, pkg, to, line, scope)
         }
 
         /** Vars a broadcast field must not shadow - the built-in line
          *  replacements always win. */
         private val RESERVED_FIELDS = setOf(
-            "type", "action", "pkg", "id", "key", "reason", "incoming", "setting", "on"
+            "type", "action", "category", "pkg", "id", "key", "reason", "incoming", "setting", "on"
         )
 
         /** A sink needs a usable name - a nameless one can never be the

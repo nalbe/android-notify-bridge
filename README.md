@@ -21,8 +21,8 @@ A normalized event bus plus a routing engine:
    event).
 2. Classify: live calls (SIM telephony or messenger VoIP, any package)
    by notification markers - category CALL, a "call"-ish channel id, or
-   answer/decline/reject/end-call actions (details below). A missed-call
-   tombstone (channel contains "missed") is classified as `missed`.
+answer/decline/reject/end-call actions (details below). A missed-call
+    tombstone (channel contains "missed") is classified as `missed_call`.
    Which package renders as a SIM call is a route concern (`pkg` filter),
    not a code concern.
 3. Route: every event is matched against the merged route list; each match
@@ -37,47 +37,51 @@ Every event carries all normalized fields; irrelevant ones are empty/`-1`/`0`:
 
 | type    | action                 | populated fields              |
 |---------|------------------------|-------------------------------|
-| notify  | `posted` / `removed`   | `$pkg` `$id` `$key` (+ `$reason` on removed) |
-| call    | `on` / `off`           | `$pkg` `$id` `$incoming` (on); `$pkg` (off) |
-| missed  | `on` / `off`           | `$pkg` `$id` (on); `$pkg` (off) |
-| screen  | `on` / `off`           | `$on` (on/off broadcasts and snapshot replay) |
-| pulse / any settings event | `on` / `off` | `$setting` `$on`      |
-| charge / any broadcast event | polarity, `eventAction`, or raw intent action | `$on` (when `polarity`) + any mapped broadcast extra |
+| notify  | `posted` / `removed`   | `$category` `$pkg` `$id` `$key` (+ `$reason` on removed, `$incoming` on live calls) |
+| screen / charge / battery (any broadcast event) | `on`/`off`, `eventAction`, or raw intent action | `$category` (=route event) `$on` (when `polarity`) + any mapped broadcast extra |
+| any settings event | `on` / `off` | `$category` (=watched key) `$setting` `$on` |
 
-`$incoming` renders `1`/`0` (freshly classified call direction),
-`$on` as `1`/`0`, `$reason` as the removal reason code. Available `$vars`
-in a route `line`: `$type $action $pkg $id $key $reason $incoming
-$setting $on`, plus any broadcast extra mapped through
-`broadcasts[].fields` (see below) - e.g. `$level`, `$status`, `$plugged`
-for battery events. Broadcast extras are rendered after the built-ins; a
-field asked to shadow a built-in name is skipped at parse.
+For notifications `$category` is the routing split: the normalized
+`call` / `missed_call`, an app's own `Notification.category` value, or
+empty when the app set none. `$incoming` renders `1`/`0` (freshly
+classified call direction), `$on` as `1`/`0`, `$reason` as the removal
+reason code. Available `$vars` in a route `line`: `$type $action
+$category $pkg $id $key $reason $incoming $setting $on`, plus any
+broadcast extra mapped through a broadcast route's `fields` (see below)
+- e.g. `$level`, `$status`, `$plugged` for battery events. Broadcast
+extras are rendered after the built-ins; a field asked to shadow a
+built-in name is skipped at parse.
 
 ### Route matching
 
-A route `when` matches the dotted `<type>.<action>` id of an event. Either
-side may be `*`, so the grammar is one rule with no hidden aliases:
+A route matches on two axes: `action` is the event action
+(`posted`/`removed`/`on`/`off`, each may be `*`) and `category` is the
+routing split - for notifications the normalized category (exact value,
+`*` = any, `""` = only notifications carrying no category), for
+broadcast events the route event, for settings the watched key:
 
-| when        | matches                                            |
-|-------------|----------------------------------------------------|
-| `notify.posted` | only posted notifications                       |
-| `call.*`    | any call event (on + off)                          |
-| `*.on`      | every `on` event from the route's scope            |
-| `*`         | everything the route's scope sees                  |
+| action / category     | matches                                        |
+|-----------------------|------------------------------------------------|
+| `posted` / `call`     | the start of a live call (any matching package)|
+| `posted` / `reminder` | a reminder-category notification posted        |
+| `removed` / `*`       | every notification removal                     |
+| `on` / `screen`       | screen on/off polarity events                  |
+| `*` / `*`             | anything the route's scope sees                |
 
-Section routes (`notifications.out`, an entry's `out`) are **scope-
-confined**: a `*` inside `notifications.out` never escapes the
-notify/call/missed vocabulary, a `*` in a broadcast entry's `out` only
-sees that entry's own event. Global `routes` are **unconfined** - a
-lone `when: "*"` there is the raw tube: one entry mirroring everything
-the bus emits into one sink.
+Section routes are **scope-confined**: a `*` inside
+`notifications.out` never escapes the notify event, and every
+broadcast/settings route is confined to its own event type (the `event`
+its trigger declares). Global `routes` are **unconfined** - a route with
+`action: "*"`+`category: "*"` there is the raw tube: one entry mirroring
+everything the bus emits into one sink.
 
 ### No sources = passive bridge
 
 There is no built-in default contract anymore. The bridge is fully
 passive - no sinks, no routes, no observers, nothing sent - whenever no
 source is active: no `notifybridge.json` and no fragments at all, a
-broken main file, or a valid config with no enabled `notifications`
-section, empty `broadcasts` and empty `settings`. The config IS the
+broken main file, or a valid config with absent/disabled `notifications`,
+`broadcasts` and `settings` sections. The config IS the
 whole policy - the closest thing to the old classic contract is
 `config/notifybridge.example.json` (deploy with
 `config/deploy-config.ps1`).
@@ -103,18 +107,27 @@ source** - and each section both says what it listens to and how to
 route what it yields:
 
 - `notifications` (optional) - the NotificationListenerService source:
-  `enabled` and `out` routes for the fixed notify/call/missed events.
-  Live-call classification runs on any package by notification markers
-  (see "Call classification"); a call from a package with no matching
-  `call.on` route simply forwards nothing. Omitting the section or
-  `enabled: false` stops notification listening.
-- `broadcasts` (list) - system broadcasts, one entry per intent action.
-  Each entry carries its own `out` routes plus `polarity` / `snapshot` /
-  `fields` (below).
-- `settings` (list) - Settings toggles observed via ContentObservers,
-  one entry per key, each carrying its own `out`.
+  `enabled` and `out` routes split on `action` + `category`. Every
+  notification is one `notify` event; live-call / missed-call
+  classification runs on any package by notification markers (see "Call
+  classification") and picks the route category - `call` / `missed_call`
+  / the app's own category / "" when none. A call from a package with no
+  matching `category:"call"` route still hits any raw `category:"*"`
+  route. Omitting the section or `enabled: false` stops notification
+  listening.
+- `broadcasts` (object) - system broadcasts: `enabled` plus a flat `out`
+  list. Every route is self-contained: its trigger (`action` intent,
+  `event` bus type / category, `polarity`, `snapshot`, `fields`) picks
+  the event, `to`/`line` route it. One intent action may fan out over
+  several routes to different sinks. Absent or `enabled: false` = no
+  receiver registered.
+- `settings` (object) - Settings toggles observed via ContentObservers:
+  `enabled` plus a flat `out` list of inline routes (`table`, `name`,
+  `event`, `defaultOn`, `to`, `line`). One key may fan out over several
+  routes. Absent or `enabled: false` = no observers registered.
 - `routes` (optional, top-level) - the global routing table, matched
-  across every source (`when: "*"` = raw tube of everything).
+  across every source (`action: "*"` + `category: "*"` = raw tube of
+  everything).
 - `sinks` - delivery endpoints; `logAll` - discovery mirror; `reload` -
   whether the RELOAD_CONFIG broadcast is honored.
 
@@ -124,12 +137,13 @@ too), main file first, fragments in alphabetical order. Each app or
 helper keeps its own fragment and pushes/replaces it without touching
 anyone else's file.
 
-Merge rules: `sinks` one per name, `broadcasts` one per action,
-`settings` one per table/name (all last occurrence wins);
-`notifications.out` and global `routes` append with exact duplicates
-collapsed; `logAll` any fragment with it enabled wins; `reload`
-merges as AND (any fragment setting it off keeps it off). A broken
-fragment is skipped and logged
+Merge rules: `sinks` one per name, all others append - `broadcasts.out`,
+`settings.out`, `notifications.out` and global `routes` collapse exact
+duplicates (last occurrence wins), so fragments freely add outputs for
+the same intent action or settings key; section `enabled` merges as
+AND; `logAll` any fragment with it enabled wins; `reload` merges as AND
+(any fragment setting it off keeps it off). A broken fragment is skipped
+and logged
 (`E nb-core: fragment ... invalid, skipped: ...`) - it never kills the
 rest. Example fragment: `config/notifybridge.d/fragment.example.json`.
 
@@ -165,112 +179,129 @@ fragment instead, `-RestartService` for the force-stop path.
   "reload": true,
 
   // ---- source: notifications -------------------------------------
+  // every notification surfaces as ONE notify event; classification
+  // picks the route category: 'call' / 'missed_call' / the app's own /
+  // '' when none. SIM vs messenger is decided here per route: dialers
+  // render as RING_*, messenger apps as VOIP_*. Routing is a fan-out:
+  // EVERY matching route fires, so split calls per package with
+  // specific-pkg routes and keep a '*' category route off that sink
+  // unless you want the raw pool to see the same event twice.
   "notifications": {
     "enabled": true,
-    // section-local routes, scope confined to notify/call/missed.
-    // 'when' is strictly validated: notify|call|missed x
-    // posted|removed|on|off (either side may be '*'). Routing is a
-    // fan-out: EVERY matching route fires, so split calls per package
-    // with specific-pkg routes and keep a '*' call route off that sink.
     "out": [
-      { "when": "notify.posted", "to": "notify_bus", "line": "ENQ $pkg $id" },
-      { "when": "notify.removed", "to": "notify_bus", "line": "CAN $pkg $id" },
-      { "when": "call.on", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "missed.on", "to": "notify_bus", "line": "MISSED_ON $id" },
-      { "when": "missed.off", "to": "notify_bus", "line": "MISSED_OFF $id" }
+      { "action": "posted", "category": "*", "to": "notify_bus", "line": "ENQ $pkg $id" },
+      { "action": "removed", "category": "*", "to": "notify_bus", "line": "CAN $pkg $id" },
+      { "action": "posted", "category": "call", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "missed_call", "to": "notify_bus", "line": "MISSED_ON $id" },
+      { "action": "removed", "category": "missed_call", "to": "notify_bus", "line": "MISSED_OFF $id" }
     ]
   },
 
   // ---- source: system broadcasts ---------------------------------
-  // one dynamic receiver, everything config-driven. action = intent
-  // action, event = bus event type, polarity = fixed on/off AND the
-  // $on bit, snapshot = re-emit current screen state on socket
-  // connect, fields = intent extra -> $var name in the rendered line.
-  "broadcasts": [
-    { "action": "android.intent.action.SCREEN_OFF", "event": "screen",
-      "polarity": "off", "snapshot": true,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "SCREEN $on" } ] },
-    { "action": "android.intent.action.SCREEN_ON", "event": "screen",
-      "polarity": "on", "snapshot": true,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "SCREEN $on" } ] },
-    { "action": "android.intent.action.POWER_CONNECTED", "event": "charge",
-      "polarity": "on",
-      "out": [ { "when": "*", "to": "notify_bus", "line": "CHG 1" } ] },
-    { "action": "android.intent.action.POWER_DISCONNECTED", "event": "charge",
-      "polarity": "off",
-      "out": [ { "when": "*", "to": "notify_bus", "line": "CHG 0" } ] },
-    { "action": "android.intent.action.BATTERY_CHANGED", "event": "battery",
-      "fields": { "level": "level", "status": "status",
-                  "plugged": "plugged", "scale": "scale" },
-      "out": [ { "when": "*", "to": "log", "line": "CHG $status $level plugged=$plugged" } ] }
-  ],
+  // one dynamic receiver, everything config-driven; each route is
+  // self-contained: action = intent action, event = bus event type
+  // (the route category), polarity = fixed on/off AND the $on bit,
+  // snapshot = re-emit current screen state on socket connect,
+  // fields = intent extra -> $var name. One intent action may fan
+  // out over several routes to different sinks.
+  "broadcasts": {
+    "enabled": true,
+    "out": [
+      { "action": "android.intent.action.SCREEN_OFF", "event": "screen",
+        "polarity": "off", "snapshot": true,
+        "to": "notify_bus", "line": "SCREEN $on" },
+      { "action": "android.intent.action.SCREEN_ON", "event": "screen",
+        "polarity": "on", "snapshot": true,
+        "to": "notify_bus", "line": "SCREEN $on" },
+      { "action": "android.intent.action.POWER_CONNECTED", "event": "charge",
+        "polarity": "on", "to": "notify_bus", "line": "CHG 1" },
+      { "action": "android.intent.action.POWER_DISCONNECTED", "event": "charge",
+        "polarity": "off", "to": "notify_bus", "line": "CHG 0" },
+      { "action": "android.intent.action.BATTERY_CHANGED", "event": "battery",
+        "fields": { "level": "level", "status": "status",
+                    "plugged": "plugged", "scale": "scale" },
+        "to": "log", "line": "CHG $status $level plugged=$plugged" }
+    ]
+  },
 
   // ---- source: settings toggles ----------------------------------
-  // watched Settings keys forwarded as 0/1 bus events; each entry
-  // carries its own out routes (scope confined to its own event).
-  "settings": [
-    { "table": "system", "name": "notification_light_pulse",
-      "event": "pulse", "defaultOn": true,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "PULSE $on" } ] }
-  ],
+  // watched Settings keys forwarded as 0/1 bus events; watch the
+  // key + choose the line, all in one inline route. A change emits
+  // <event> <on>/<off> with $setting set, the route category is the
+  // watched key name.
+  "settings": {
+    "enabled": true,
+    "out": [
+      { "table": "system", "name": "notification_light_pulse",
+        "event": "pulse", "defaultOn": true,
+        "to": "notify_bus", "line": "PULSE $on" }
+    ]
+  },
 
   // ---- global routing table ---------------------------------------
   // matched across EVERY source: the raw tube and cross-source hooks.
   "routes": [
-    { "when": "*.on",  "to": "log", "line": "ANYON 1" },
-    { "when": "*.off", "to": "log", "line": "ANYOFF 0" }
+    { "action": "on",  "category": "*", "to": "log", "line": "ANYON 1" },
+    { "action": "off", "category": "*", "to": "log", "line": "ANYOFF 0" }
   ]
 }
 ```
 
 A config (main or fragment) is minimal by design: omit a key and it
 simply does nothing in the merge - so a fragment may contain only
-`settings`, or an app may only add a `call.on`/`call.off` route pair
-for its own package plus a route. A totally broken main file puts the
-bridge into passive until fixed; a broken fragment is skipped on its own.
+`settings`, or an app may only add a `posted`/`removed` route pair with
+`category:"call"` for its own package plus a route. A totally broken
+main file puts the bridge into passive until fixed; a broken fragment
+is skipped on its own.
 
 Route fields:
-  `when` (`<type>.<action>`, either side `*`, or `*`), `pkg` (exact,
-  `prefix*` glob, or `*` - meaningful for notification events), `to`
-  (sink key), `line` (template, optional - defaults to
-  `$type $action $pkg $id`). A route without `to` is dropped at parse;
-  an unknown `when` inside `notifications.out` is dropped with a
-  warning (typos never silently die).
+  `action` (`posted`/`removed`/`on`/`off`, or `*`), `category` (the
+  routing split - for notifications the normalized category, exact
+  value / `*` any / `""` only none; for broadcast events the event;
+  for settings the watched key), `pkg` (exact, `prefix*` glob, or `*` -
+  meaningful for notification events), `to` (sink key), `line`
+  (template, optional - defaults to `$type $action $pkg $id`). A route
+  without `to` is dropped at parse; an unknown `action` inside
+  `notifications.out` is dropped with a warning (typos never silently
+  die); the retired `when` key and the old per-entry `out` nesting are
+  dropped with a warning too.
 
-Broadcasts: the system broadcast channel is fully config-driven - there
-are no hardcoded actions in the code. Register any intent action the
-framework delivers to a dynamic receiver; a sticky broadcast (like
-`BATTERY_CHANGED`) also replays its current state the moment the config
-is applied. Extras are mapped per entry: `fields` maps an intent extra
-key to the `$var` name usable in route lines (values render as
-strings). The bus action for an entry is: `polarity` (`on`/`off` - also
-sets real `$on`) if set, else `eventAction`, else the raw intent action
-($on stays 0 for raw variadic extras). `snapshot: true` makes the entry
-feed the connect replay: on a socket connect the bridge re-emits the
-current screen polarity (PowerManager) through that entry's routes.
-Protected system broadcasts need no permission for a dynamic receiver;
-only the receiver for the listed actions is ever registered.
+Broadcast routes: self-contained - the route IS the entry. `action` =
+the intent action to register, `event` = the bus event type (the route
+category), `polarity` (`on`/`off`) = fixed bus action AND the real `$on`
+bit, `eventAction` = a custom bus action if you want neither polarity
+nor the raw intent action, `snapshot: true` = feed the connect replay
+(re-emit the current screen polarity via this route), `fields` maps
+intent extras (BatteryManager.EXTRA_* etc.) to `$vars`. The bus action
+is `polarity` when set, else `eventAction`, else the raw intent action
+($on stays 0 for raw variadic extras). One intent action may appear on
+any number of routes (fan-out) - every matching route emits its own
+event. Sticky broadcasts (`BATTERY_CHANGED`) replay their current state
+the moment the config is applied. Protected system broadcasts need no
+permission for a dynamic receiver; only the listed actions are ever
+registered.
 
-Settings: each entry lists a `table` (`system`|`global`|`secure`), a
-`name`, the `event` type it maps to (optional, `pulse`), and `defaultOn`
-(optional, `false`) - what to forward if the setting is unset
-(on = 1, off = 0). A change forwards `<event> <on>/<off>` with `$setting`
-set, through the entry's `out` routes.
+Settings routes: also self-contained. `table` (`system`|`global`|
+`secure`), `name` (watched key), `event` (bus event type, optional,
+`pulse`), `defaultOn` (optional, `false`) - what to forward if the
+setting is unset (on = 1, off = 0). A change emits `<event> <on>/<off>`
+with `$setting` set through every route matching the table/name.
 
-Passive sections = not listened to: `broadcasts: []`/absent registers
-no receiver, `settings: []`/absent registers no observer,
-`notifications` absent or `enabled: false` drops every notification
-callback (no classification, no bookkeeping), `reload: false` freezes
-the running config until the service restarts.
+Passive sections = not listened to: absent or `enabled: false`
+`broadcasts` registers no receiver, absent or `enabled: false`
+`settings` registers no observer, `notifications` absent or
+`enabled: false` drops every notification callback (no classification,
+no bookkeeping), `reload: false` freezes the running config until the
+service restarts.
 
 **Extending without code:** edit the route lists to forward only what
 you need; point `to` at your own sink; switch a `line` to your own
 format; route events to `log` for a logcat mirror; add a second socket
-sink for a second consumer; add a global route with `when: "*"` for a
-raw tube of everything.
+sink for a second consumer; add a global route with `action: "*"` +
+`category: "*"` for a raw tube of everything.
 
 ## Discover what to route
 
@@ -289,19 +320,21 @@ needed - only the `logAll` flag and at least one active source in the
 config file):
 
 ```
-EVENT notify posted pkg=org.telegram.messenger id=123 key=0|... reason=0 incoming=0 setting= on=0
-EVENT call on pkg=com.google.android.dialer id=7 key=... reason=0 incoming=1 setting= on=0
-EVENT screen off pkg= id=-1 key= reason=0 incoming=0 setting= on=0
-EVENT pulse on pkg= id=-1 key= reason=0 incoming=0 setting=notification_light_pulse on=1
-EVENT battery android.intent.action.BATTERY_CHANGED pkg= id=-1 key= reason=0 incoming=0 setting= on=0 fields=status=2,level=55,plugged=1
+EVENT notify posted category= pkg=org.telegram.messenger id=123 key=0|... reason=0 incoming=0 setting= on=0
+EVENT notify posted category=call pkg=com.google.android.dialer id=7 key=... reason=0 incoming=1 setting= on=0
+EVENT notify posted category=missed_call pkg=com.android.dialer id=9 key=... reason=0 incoming=0 setting= on=0
+EVENT screen off category=screen pkg= id=-1 key= reason=0 incoming=0 setting= on=0
+EVENT pulse on category=notification_light_pulse pkg= id=-1 key= reason=0 incoming=0 setting=notification_light_pulse on=1
+EVENT battery android.intent.action.BATTERY_CHANGED category=battery pkg= id=-1 key= reason=0 incoming=0 setting= on=0 fields=status=2,level=55,plugged=1
 ```
 
-`incoming=1` tells you the call classification fired (call on);
-`$pkg`, `$action`, `$on` are exactly what you copy into route `pkg`
-filters, `when` patterns and `line` templates; `setting=` names
-the watched Settings key; `on=1` confirms a real polarity bit from
-`polarity`/`snapshot` entries. For broadcast-sourced events a `fields=`
-chunk lists the mapped extras - those names are your route line `$vars`.
+`category=call` tells you the live-call classification fired (route it
+with `category:"call"`); `$pkg`, `$action`, `$category`, `$on` are
+exactly what you copy into route `pkg` filters, `category`/`action`
+values and `line` templates; `setting=` names the watched Settings key;
+`on=1` confirms a real polarity bit from `polarity`/`snapshot` entries.
+For broadcast-sourced events a `fields=` chunk lists the mapped extras -
+those names are your route line `$vars`.
 
 ### Log tags: one filterable stream per source
 
@@ -327,27 +360,30 @@ adb logcat -s nb-notify:* nb-core:D     # notifications + config plumbing
 ## Call classification
 
 Runs on **any package**, no package lists in config. The markers are
-built in:
+built in and select the event's **category** - `call` (live) or
+`missed_call` (tombstone):
 
-- **call (live calls)** - NOT a missed-call row (channel id containing
+- **`call` (live calls)** - NOT a missed-call row (channel id containing
   `missed`, which ALSO contains `call` - the tombstone check wins).
   Fired when the notification has `CATEGORY_CALL`, a `call`-ish channel
   id, or answer/decline/reject/end-call/hang-up actions. `$incoming` =
   1 when an answer/decline/reject action or an `incoming`/`ring`
   channel is present.
-- **missed** - a missed-call tombstone: channel id contains `missed`.
-- **notify** - everything else (a plain chat message matches no call
-  marker and takes the normal path).
+- **`missed_call`** - a missed-call tombstone: channel id contains
+  `missed`.
+- **anything else** - the app's own `Notification.category` value, or ""
+  when none (a plain chat message matches no call marker and takes the
+  normal path with its real category).
 
-SIM-versus-VOIP rendering is **not** classified - it is routed. One
-`call.on` event per live call hits every matching route (fan-out), so
-the config lists one `call.on`/`call.off` pair per package: telephony
+SIM-versus-VOIP rendering is **not** classified - it is routed. Every
+event hits every matching route (fan-out), so the config lists one
+`posted`/`removed` pair per package with `category:"call"`: telephony
 dialers render as `RING_*`, messenger apps as `VOIP_*`; a live call
-from a package with no `call.*` route simply forwards nothing. A
-package inside a live call sends no `notify.posted` ping - `call.on`
-already carries the whole picture, so the consumer pool never sees the
-same call twice; `notify.*` resumes the moment the last call key for
-that package goes away, no package lists involved.
+from a package with no call route still hits any `category:"*"` raw
+route (drop that pair, or narrow it, to keep a live call off the raw
+pool). Live-call / missed-call bookkeeping only masks the raw pool if
+your config asks for it - `category:"*"` notify routes see every event,
+decisions included.
 
 ## Requirements
 

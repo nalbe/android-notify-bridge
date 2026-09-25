@@ -1,5 +1,5 @@
 {
-  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Every event source is its own section (notifications/broadcasts/settings) that both listens and owns its out routes; the optional global 'routes' table matches across all sources. 'when' grammar: <type>.<action>, each side may be '*', a lone '*' = everything in scope. Route 'pkg' filters by package (exact or 'prefix*', default '*'). Every matching route fires (routing is a fan-out): to route one event to different lines per package, list specific-pkg routes and do NOT mix a '*' route for the same when on the same sink - the package hits both and the sink gets two lines. Unknown/extra keys are ignored; an unknown 'when' inside notifications.out is dropped with a warning.",
+  "_comment": "notifybridge example config. Deploy with config/deploy-config.ps1 (pushes to /data/local/tmp/notifybridge.json). No config file at all = bridge fully passive. Every event source is its own section (notifications/broadcasts/settings) with a flat out list; the optional global 'routes' table matches across all sources. Route grammar: 'action' = posted/removed/on/off ('*' any), 'category' = the routing split (exact value / '*' any / '' only none - for notifications the normalized category 'call' / 'missed_call' / the app's own / '' when none), 'pkg' filters by package (exact or 'prefix*', default '*'). Broadcast/settings routes are self-contained: their trigger fields (action/event/polarity/snapshot/fields and table/name/event/defaultOn) pick the event, to/line route it; one trigger may fan out over several routes to different sinks. Every matching route fires (routing is a fan-out): to route one event to different lines per package, list specific-pkg routes and do NOT mix a '*' route for the same action on the same sink - the package hits both and the sink gets two lines. The old 'when' key and the per-entry 'out' nesting are gone (dropped with a warning). Unknown/extra keys are ignored; an unknown 'action' inside notifications.out is dropped with a warning.",
   "sinks": [
     { "type": "socket", "name": "notify_bus" },
     { "type": "logcat", "name": "log" }
@@ -8,109 +8,123 @@
   "reload": true,
 
   "notifications": {
-    "_comment": "NotificationListenerService source. enabled:false (or omitting the whole section) stops notification listening entirely. Call classification runs on ANY package by notification markers (category CALL, a 'call'-ish channel, answer/decline/end-call actions): a live call is call.on/call.off, a missed-call tombstone (channel contains 'missed') is missed.on/missed.off, everything else is notify.posted/removed. The bridge does NOT decide SIM vs messenger - this config does, one line per package: telephony dialers render as RING_*, messenger/voip apps as VOIP_*; a live call from any other package sends nothing (routes below are per-pkg, no '*' call route, so it simply goes nowhere). To forward a call from a new app, add a call.on/call.off pair with its package. A package inside a live call sends no notify.* (call.on already carries the picture). To forward only a few apps, set 'pkg' on notify routes instead of '*'.",
+    "_comment": "NotificationListenerService source. enabled:false (or omitting the whole section) stops notification listening entirely. Every notification is one notify event; call classification runs on ANY package by notification markers (category CALL, a 'call'-ish channel, answer/decline/end-call actions) and picks the route category - a live call is 'call' ($incoming rides along, $reason on removal), a missed-call tombstone (channel contains 'missed') is 'missed_call', everything else keeps the app's own category or '' if it set none. The bridge does NOT decide SIM vs messenger - the config does, one line per package: telephony dialers render as RING_*, messenger/voip apps as VOIP_*; a live call from any other package only ever matches the raw ENQ/CAN routes below. To forward a call from a new app, add a posted/removed pair with its package. To forward only a few apps, set 'pkg' on the raw routes instead of '*'. To keep a live call off the raw pool entirely, drop the ENQ/CAN pair or narrow their 'category'.",
     "enabled": true,
     "out": [
-      { "when": "notify.posted", "pkg": "*", "to": "notify_bus", "line": "ENQ $pkg $id" },
-      { "when": "notify.removed", "pkg": "*", "to": "notify_bus", "line": "CAN $pkg $id" },
-      { "when": "call.on", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.android.incallui", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.android.incallui", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.android.contacts", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.android.contacts", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.samsung.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.samsung.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.oneplus.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.oneplus.dialer", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.oppo.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.oppo.dialer", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "com.huawei.contacts", "to": "notify_bus", "line": "RING_ON $incoming" },
-      { "when": "call.off", "pkg": "com.huawei.contacts", "to": "notify_bus", "line": "RING_OFF" },
-      { "when": "call.on", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.whatsapp", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.whatsapp", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.whatsapp.w4b", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.whatsapp.w4b", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.viber.voip", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.viber.voip", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.skype.m2", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.skype.m2", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.facebook.orca", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.facebook.orca", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.google.android.apps.meetings", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.google.android.apps.meetings", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "org.thoughtcrime.securesms", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "org.thoughtcrime.securesms", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "com.discord", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "com.discord", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "call.on", "pkg": "us.zoom.videomeetings", "to": "notify_bus", "line": "VOIP_ON $pkg" },
-      { "when": "call.off", "pkg": "us.zoom.videomeetings", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
-      { "when": "missed.on", "pkg": "*", "to": "notify_bus", "line": "MISSED_ON $id" },
-      { "when": "missed.off", "pkg": "*", "to": "notify_bus", "line": "MISSED_OFF $id" },
-      { "when": "*", "to": "log", "line": "$type $action $pkg $id" }
+      { "action": "posted", "category": "*", "to": "notify_bus", "line": "ENQ $pkg $id" },
+      { "action": "removed", "category": "*", "to": "notify_bus", "line": "CAN $pkg $id" },
+      { "action": "posted", "category": "call", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.google.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.android.incallui", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.android.incallui", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.android.contacts", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.android.contacts", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.samsung.android.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.samsung.android.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.oneplus.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.oneplus.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.oppo.dialer", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.oppo.dialer", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "com.huawei.contacts", "to": "notify_bus", "line": "RING_ON $incoming" },
+      { "action": "removed", "category": "call", "pkg": "com.huawei.contacts", "to": "notify_bus", "line": "RING_OFF" },
+      { "action": "posted", "category": "call", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "org.telegram.messenger", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.whatsapp", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.whatsapp", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.whatsapp.w4b", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.whatsapp.w4b", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.viber.voip", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.viber.voip", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.skype.m2", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.skype.m2", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.facebook.orca", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.facebook.orca", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.google.android.apps.meetings", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.google.android.apps.meetings", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "org.thoughtcrime.securesms", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "org.thoughtcrime.securesms", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "com.discord", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "com.discord", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "call", "pkg": "us.zoom.videomeetings", "to": "notify_bus", "line": "VOIP_ON $pkg" },
+      { "action": "removed", "category": "call", "pkg": "us.zoom.videomeetings", "to": "notify_bus", "line": "VOIP_OFF $pkg" },
+      { "action": "posted", "category": "missed_call", "to": "notify_bus", "line": "MISSED_ON $id" },
+      { "action": "removed", "category": "missed_call", "to": "notify_bus", "line": "MISSED_OFF $id" },
+      { "action": "*", "category": "*", "to": "log", "line": "$type $action $category $pkg $id" }
     ]
   },
 
-  "broadcasts": [
-    {
-      "_comment": "Screen entries with polarity emit action on/off AND a real $on bit. snapshot:true re-emits the current screen state (PowerManager) into a freshly connected sink on replay.",
-      "action": "android.intent.action.SCREEN_OFF",
-      "event": "screen",
-      "polarity": "off",
-      "snapshot": true,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "SCREEN $on" } ]
-    },
-    {
-      "action": "android.intent.action.SCREEN_ON",
-      "event": "screen",
-      "polarity": "on",
-      "snapshot": true,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "SCREEN $on" } ]
-    },
-    {
-      "action": "android.intent.action.POWER_CONNECTED",
-      "event": "charge",
-      "polarity": "on",
-      "out": [ { "when": "*", "to": "notify_bus", "line": "CHG 1" } ]
-    },
-    {
-      "action": "android.intent.action.POWER_DISCONNECTED",
-      "event": "charge",
-      "polarity": "off",
-      "out": [ { "when": "*", "to": "notify_bus", "line": "CHG 0" } ]
-    },
-    {
-      "action": "android.intent.action.BATTERY_CHANGED",
-      "event": "battery",
-      "fields": { "level": "level", "status": "status", "plugged": "plugged", "scale": "scale" },
-      "out": [ { "when": "*", "to": "log", "line": "BATT $status $level plugged=$plugged" } ]
-    }
-  ],
+  "broadcasts": {
+    "enabled": true,
+    "_comment": "System broadcasts: one section, flat out list. Each route is self-contained - its trigger (action/event/eventAction/polarity/snapshot/fields) picks the event, to/line route it. One intent action may fan out over any number of routes to different sinks (repeat the action+event). A route without 'action', 'event' or 'to' is dropped with a warning. Registering the receiver delivers sticky states (BATTERY_CHANGED) by itself. The old nesting (entry with its own out) is gone.",
+    "out": [
+      {
+        "action": "android.intent.action.SCREEN_OFF",
+        "event": "screen",
+        "polarity": "off",
+        "snapshot": true,
+        "to": "notify_bus",
+        "line": "SCREEN $on"
+      },
+      {
+        "action": "android.intent.action.SCREEN_ON",
+        "event": "screen",
+        "polarity": "on",
+        "snapshot": true,
+        "to": "notify_bus",
+        "line": "SCREEN $on"
+      },
+      {
+        "action": "android.intent.action.POWER_CONNECTED",
+        "event": "charge",
+        "polarity": "on",
+        "to": "notify_bus",
+        "line": "CHG 1"
+      },
+      {
+        "action": "android.intent.action.POWER_DISCONNECTED",
+        "event": "charge",
+        "polarity": "off",
+        "to": "notify_bus",
+        "line": "CHG 0"
+      },
+      {
+        "action": "android.intent.action.BATTERY_CHANGED",
+        "event": "battery",
+        "fields": { "level": "level", "status": "status", "plugged": "plugged", "scale": "scale" },
+        "to": "log",
+        "line": "BATT $status $level plugged=$plugged"
+      }
+    ]
+  },
 
-  "settings": [
-    {
-      "_comment": "Watch Settings.System.notification_light_pulse and forward changes as pulse on/off ($on = 1/0). table: system|global|secure, event: any bus event type, defaultOn: polarity when the key is missing/unreadable.",
-      "table": "system",
-      "name": "notification_light_pulse",
-      "event": "pulse",
-      "defaultOn": true,
-      "out": [ { "when": "*", "to": "notify_bus", "line": "PULSE $on" } ]
-    }
-  ],
+  "settings": {
+    "enabled": true,
+    "_comment": "Watch Settings keys and forward changes through inline routes. One flat out list; route fields: table (system|global|secure), name (watched key), event (bus event type, the route category), defaultOn (polarity when the key is missing/unreadable), to, line. One name may fan out over several routes.",
+    "out": [
+      {
+        "table": "system",
+        "name": "notification_light_pulse",
+        "event": "pulse",
+        "defaultOn": true,
+        "to": "notify_bus",
+        "line": "PULSE $on"
+      }
+    ]
+  },
 
   "routes": [
     {
-      "_comment": "Global routes match across every source - this is the raw-tube / cross-source hook. A lone '*' mirrors everything; '*.on'/'*.off' catch every polarity event.",
-      "when": "*.on",
+      "_comment": "Global routes match across every source - this is the raw-tube / cross-source hook. 'action':'*' + 'category':'*' mirrors everything; an action-only route catches every polarity event of that action.",
+      "action": "on",
+      "category": "*",
       "to": "log",
       "line": "ANYON 1"
     },
     {
-      "when": "*.off",
+      "action": "off",
+      "category": "*",
       "to": "log",
       "line": "ANYOFF 0"
     }

@@ -3,12 +3,15 @@ package com.bastet.notifybridge
 /**
  * A single observed event on the bridge bus, fully normalized before it
  * ever reaches a route:
- *  type   = notify | call | missed | screen | pulse | battery (or any
- *            event declared in a settings or broadcast config entry)
- *  action = posted | removed | on | off  (per type)
+ *  type     = notify | screen | charge | battery (or any event declared
+ *             in a settings or broadcast config entry)
+ *  action   = posted | removed | on | off  (per type)
+ *  category = the per-section routing split: for notifications the
+ *             normalized category (real / "call" / "missed_call" / ""),
+ *             for broadcasts the entry event, for settings the key name
  *  pkg/id/key = the notification identity ("" / -1 / "" when n/a),
  *  reason     = onNotificationRemoved reason code,
- *  incoming   = freshly classified call direction (call.on only),
+ *  incoming   = freshly classified call direction (live-call events only),
  *  setting    = watched setting name that produced this event,
  *  on         = screen / pulse / broadcast polarity,
  *  fields     = broadcast-sourced extras (intent extra -> bus var name),
@@ -19,6 +22,7 @@ package com.bastet.notifybridge
 data class BridgeEvent(
     val type: String,
     val action: String,
+    val category: String = "",
     val pkg: String = "",
     val id: Int = -1,
     val key: String = "",
@@ -32,6 +36,7 @@ data class BridgeEvent(
     fun render(line: String): String = line
         .replace("\$type", type)
         .replace("\$action", action)
+        .replace("\$category", category)
         .replace("\$pkg", pkg)
         .replace("\$id", id.toString())
         .replace("\$key", key)
@@ -66,7 +71,8 @@ object EventRouter {
         val fields = if (e.fields.isEmpty()) ""
             else " fields=" + e.fields.entries.joinToString(",") { "${it.key}=${it.value}" }
         android.util.Log.i(BLog.tagOf(e),
-            "EVENT ${e.type} ${e.action} pkg=${e.pkg} id=${e.id} key=${e.key} " +
+            "EVENT ${e.type} ${e.action} category=${e.category} pkg=${e.pkg} " +
+                "id=${e.id} key=${e.key} " +
                 "reason=${e.reason} incoming=${if (e.incoming) "1" else "0"} " +
                 "setting=${e.setting} on=${if (e.on) "1" else "0"}$fields")
     }
