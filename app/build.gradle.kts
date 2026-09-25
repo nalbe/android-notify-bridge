@@ -11,8 +11,8 @@ android {
         applicationId = "com.bastet.notifybridge"
         minSdk = 29
         targetSdk = 34
-        versionCode = 7
-        versionName = "7.0.0"
+        versionCode = 8
+        versionName = "7.1.0"
     }
 
     compileOptions {
